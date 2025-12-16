@@ -1,0 +1,59 @@
+# ============================================================================
+# CLICK WHITE LABEL CONFIGURATION
+# ============================================================================
+# Click WLs have Admin panel only.
+# Click tracking typically runs on a separate domain.
+#
+# Template usage:
+#   1. Copy this file: cp templates/click-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}              → Admin panel
+#   - cdn.{domain}                → CDN distribution
+#   - reports.{domain}            → Reports
+#   - {click_domain} (if set)     → Click tracking domain
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.partners"         # Main domain from Confluence
+wl_type = "click"                   # Always "click" for Click WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# TYPICAL: SEPARATE CLICK DOMAIN
+# ----------------------------------------------------------------------------
+# Click WLs typically use a separate domain for tracking.
+# 
+# Real-world example - Slapkong:
+#   Main: slapkong.partners (admin panel)
+#   Tracking: trackingslapkong.com (click tracking)
+#
+# If Confluence shows a "Click-domain" field, uncomment below:
+#
+# click_domain  = "trackingexample.com"    # Separate click/tracking domain
+# click_zone_id = "click-zone-id-here"     # Cloudflare Zone ID for click domain
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.partners", "another.example.partners"]

@@ -1,0 +1,68 @@
+# ============================================================================
+# MIXED WHITE LABEL CONFIGURATION
+# ============================================================================
+# Mixed WLs have Admin panel, Agent panel, AND Click on root domain.
+# Optionally can have an ADDITIONAL separate click domain.
+#
+# Template usage:
+#   1. Copy this file: cp templates/mixed-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}              → Admin panel
+#   - agent.{domain}              → Agent panel
+#   - {domain} (ROOT)             → Click panel on main domain
+#   - cdn.{domain}                → CDN distribution
+#   - reports.{domain}            → Reports
+#   - {click_domain} (if set)     → ADDITIONAL click tracking domain
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+#   - {PLATFORM_CODE}_AGENT_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.com"              # Main domain from Confluence
+wl_type = "mixed"                   # Always "mixed" for Mixed WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin" or "adminagent")
+agent_subdomain = "agent"           # Agent subdomain (usually "agent")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# OPTIONAL: ADDITIONAL SEPARATE CLICK DOMAIN
+# ----------------------------------------------------------------------------
+# Mixed WLs ALREADY have click on the main domain (root domain).
+# This field is for an ADDITIONAL separate click domain if needed.
+#
+# IMPORTANT: 
+#   - Main domain click: example.com (root) ← ALREADY EXISTS
+#   - This field adds: ADDITIONAL tracking domain
+#
+# Real-world example - Owinbet:
+#   Main: owinbet.com (admin + agent + click on root)
+#   Additional: vbnmmmbv.com (extra click tracking domain)
+#
+# If Confluence shows "Click Domain (NEW)", uncomment below:
+#
+# click_domain  = "additional-tracking.com"    # ADDITIONAL click domain
+# click_zone_id = "click-zone-id-here"         # Cloudflare Zone ID
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.com", "another.example.com"]

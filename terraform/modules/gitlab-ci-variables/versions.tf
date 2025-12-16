@@ -1,0 +1,12 @@
+# terraform/modules/gitlab-ci-variables/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    gitlab = {
+      source  = "gitlabhq/gitlab"
+      version = "~> 17.0"
+    }
+  }
+}

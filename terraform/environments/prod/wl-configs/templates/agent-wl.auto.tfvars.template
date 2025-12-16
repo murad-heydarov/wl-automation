@@ -1,0 +1,47 @@
+# ============================================================================
+# AGENT WHITE LABEL CONFIGURATION
+# ============================================================================
+# Agent WLs have Admin panel and Agent panel only.
+# NO click functionality exists on Agent WLs.
+#
+# Template usage:
+#   1. Copy this file: cp templates/agent-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}     → Admin panel
+#   - agent.{domain}     → Agent panel
+#   - cdn.{domain}       → CDN distribution
+#   - reports.{domain}   → Reports
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+#   - {PLATFORM_CODE}_AGENT_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.com"              # Main domain from Confluence
+wl_type = "agent"                   # Always "agent" for Agent WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin")
+agent_subdomain = "agent"           # Agent subdomain (usually "agent")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.com", "another.example.com"]

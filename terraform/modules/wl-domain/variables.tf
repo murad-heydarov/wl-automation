@@ -188,13 +188,13 @@ variable "reports_subdomain" {
 variable "cdn_default_ttl" {
   description = "Default TTL for CDN cache (in seconds)"
   type        = number
-  default     = 86400  # 24 hours
+  default     = 86400 # 24 hours
 }
 
 variable "cdn_max_ttl" {
   description = "Maximum TTL for CDN cache (in seconds)"
   type        = number
-  default     = 31536000  # 1 year
+  default     = 31536000 # 1 year
 }
 
 # Reports-specific settings
@@ -207,7 +207,7 @@ variable "reports_enable_versioning" {
 variable "reports_price_class" {
   description = "CloudFront price class for Reports"
   type        = string
-  default     = "PriceClass_100"  # Cheaper, reports have less traffic
+  default     = "PriceClass_100" # Cheaper, reports have less traffic
 }
 
 # ============================================================================
@@ -283,4 +283,14 @@ variable "create_root_record" {
   description = "Create {domain} (root) DNS record pointing to ALB"
   type        = bool
   default     = false
+}
+
+# ============================================================================
+# Mailgun Configuration
+# ============================================================================
+
+variable "mail_domain" {
+  description = "Mail support domain (e.g., 'support.afftech.xyz'). If null, Mailgun will not be configured."
+  type        = string
+  default     = null
 }

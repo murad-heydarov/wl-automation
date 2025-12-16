@@ -16,6 +16,10 @@ terraform {
       source  = "gitlabhq/gitlab"
       version = "~> 17.0"
     }
+    mailgun = {
+      source  = "murad-heydarov/mailgun"
+      version = "0.1.5"
+    }
   }
 }
 
@@ -55,4 +59,9 @@ provider "cloudflare" {
 provider "gitlab" {
   token    = var.gitlab_token
   base_url = var.gitlab_base_url
+}
+
+# Mailgun Provider
+provider "mailgun" {
+  api_key = var.mailgun_api_key
 }

@@ -15,6 +15,7 @@
 #   - agent.{domain}     → Agent panel
 #   - cdn.{domain}       → CDN distribution
 #   - reports.{domain}   → Reports
+#   - support.{domain}   → Mailgun (optional)
 #
 # GitLab CI/CD variables created:
 #   - {PLATFORM_CODE}_PROD_BUCKET_NAME
@@ -45,3 +46,13 @@ gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
 # Uncomment if you need additional domains in the certificate
 #
 # sans = ["www.example.com", "another.example.com"]
+
+# ============================================================================
+# Mailgun Configuration (Optional)
+# ============================================================================
+# If you want email support functionality, uncomment and configure:
+#
+# mail_domain = "support.example.com"  # Mail domain for Mailgun
+#
+# Note: You must also set TF_VAR_mailgun_api_key environment variable
+#       or add it to terraform.tfvars (not committed to git)

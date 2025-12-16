@@ -18,50 +18,50 @@ output "cloudfront_certificate_arn" {
 output "admin" {
   description = "Admin distribution details"
   value = var.create_admin ? {
-    fqdn               = module.admin[0].fqdn
-    s3_bucket          = module.admin[0].s3_bucket_name
-    cloudfront_domain  = module.admin[0].cloudfront_domain_name
-    cloudfront_id      = module.admin[0].cloudfront_distribution_id
+    fqdn              = module.admin[0].fqdn
+    s3_bucket         = module.admin[0].s3_bucket_name
+    cloudfront_domain = module.admin[0].cloudfront_domain_name
+    cloudfront_id     = module.admin[0].cloudfront_distribution_id
   } : null
 }
 
 output "agent" {
   description = "Agent distribution details"
   value = var.create_agent ? {
-    fqdn               = module.agent[0].fqdn
-    s3_bucket          = module.agent[0].s3_bucket_name
-    cloudfront_domain  = module.agent[0].cloudfront_domain_name
-    cloudfront_id      = module.agent[0].cloudfront_distribution_id
+    fqdn              = module.agent[0].fqdn
+    s3_bucket         = module.agent[0].s3_bucket_name
+    cloudfront_domain = module.agent[0].cloudfront_domain_name
+    cloudfront_id     = module.agent[0].cloudfront_distribution_id
   } : null
 }
 
 output "click" {
   description = "Click distribution details"
   value = var.create_click ? {
-    fqdn               = module.click[0].fqdn
-    s3_bucket          = module.click[0].s3_bucket_name
-    cloudfront_domain  = module.click[0].cloudfront_domain_name
-    cloudfront_id      = module.click[0].cloudfront_distribution_id
+    fqdn              = module.click[0].fqdn
+    s3_bucket         = module.click[0].s3_bucket_name
+    cloudfront_domain = module.click[0].cloudfront_domain_name
+    cloudfront_id     = module.click[0].cloudfront_distribution_id
   } : null
 }
 
 output "cdn" {
   description = "CDN distribution details"
   value = var.create_cdn ? {
-    fqdn               = module.cdn[0].fqdn
-    s3_bucket          = module.cdn[0].s3_bucket_name
-    cloudfront_domain  = module.cdn[0].cloudfront_domain_name
-    cloudfront_id      = module.cdn[0].cloudfront_distribution_id
+    fqdn              = module.cdn[0].fqdn
+    s3_bucket         = module.cdn[0].s3_bucket_name
+    cloudfront_domain = module.cdn[0].cloudfront_domain_name
+    cloudfront_id     = module.cdn[0].cloudfront_distribution_id
   } : null
 }
 
 output "reports" {
   description = "Reports distribution details"
   value = var.create_reports ? {
-    fqdn               = module.reports[0].fqdn
-    s3_bucket          = module.reports[0].s3_bucket_name
-    cloudfront_domain  = module.reports[0].cloudfront_domain_name
-    cloudfront_id      = module.reports[0].cloudfront_distribution_id
+    fqdn              = module.reports[0].fqdn
+    s3_bucket         = module.reports[0].s3_bucket_name
+    cloudfront_domain = module.reports[0].cloudfront_domain_name
+    cloudfront_id     = module.reports[0].cloudfront_distribution_id
   } : null
 }
 

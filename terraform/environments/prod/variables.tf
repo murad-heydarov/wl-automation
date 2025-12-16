@@ -111,3 +111,20 @@ variable "alb_dns_name" {
   type        = string
   default     = "mt-apps-ingress-978b1006d8a9d559.elb.eu-central-1.amazonaws.com"
 }
+
+# ============================================================================
+# Mailgun Configuration
+# ============================================================================
+
+variable "mailgun_api_key" {
+  description = "Mailgun API Key (EU region)"
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "mail_domain" {
+  description = "Mail support domain (e.g., 'support.afftech.xyz')"
+  type        = string
+  default     = null
+}

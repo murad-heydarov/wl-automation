@@ -10,7 +10,7 @@ data "cloudflare_zone" "zone" {
 }
 
 locals {
-  zone_id = "84787ea66aa226406e7c736892c6d493"  # afftech.xyz
+  zone_id = "84787ea66aa226406e7c736892c6d493" # afftech.xyz
   sans    = var.sans != null && length(var.sans) > 0 ? var.sans : ["*.${var.domain}"]
 }
 
@@ -126,7 +126,7 @@ module "click" {
   source = "../cloudfront-s3-website"
 
   domain_name     = var.domain
-  subdomain       = "@"  # Root domain indicator
+  subdomain       = "@" # Root domain indicator
   certificate_arn = module.validation.cloudfront_certificate_arn
 
   s3_index_document      = var.s3_index_document
@@ -214,8 +214,8 @@ module "reports" {
 
   # Reports cache settings - Medium TTL
   min_ttl     = 0
-  default_ttl = 3600   # 1 hour
-  max_ttl     = 86400  # 24 hours
+  default_ttl = 3600  # 1 hour
+  max_ttl     = 86400 # 24 hours
 
   custom_error_responses = [
     {
@@ -370,4 +370,25 @@ module "gitlab_variables" {
     module.admin,
     module.agent
   ]
+}
+
+# ============================================================================
+# Mailgun Integration (Optional)
+# ============================================================================
+
+module "mailgun" {
+  count  = var.mail_domain != null ? 1 : 0
+  source = "../mailgun"
+
+  domain             = var.domain
+  mail_domain        = var.mail_domain
+  mailgun_region     = "eu" # Default to EU region
+  cloudflare_zone_id = local.zone_id
+
+  tags = merge(var.tags, {
+    Purpose = "Email Support"
+    WL_Type = var.wl_type
+  })
+
+  depends_on = [module.validation]
 }

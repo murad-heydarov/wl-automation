@@ -32,13 +32,16 @@ module "main_domain" {
 
   # ALB DNS configuration
   alb_dns_name      = var.alb_dns_name
-  create_api_record = true  # Always create api.{domain} for main domain
+  create_api_record = true # Always create api.{domain} for main domain
 
   # GitLab CI/CD
   gitlab_project_id          = var.gitlab_project_id
   gitlab_variables_protected = false
   gitlab_variables_masked    = false
   gitlab_environment_scope   = "*"
+
+  # Mailgun Configuration
+  mail_domain = var.mail_domain
 
   tags = merge(
     local.common_tags,
@@ -74,8 +77,8 @@ module "click_domain" {
 
   # ALB DNS configuration (click domain needs root record only)
   alb_dns_name       = var.alb_dns_name
-  create_api_record  = false  # No api.{click_domain}
-  create_root_record = true   # Create {click_domain} → ALB
+  create_api_record  = false # No api.{click_domain}
+  create_root_record = true  # Create {click_domain} → ALB
 
   # NO GitLab variables for separate click domain
   gitlab_project_id          = null

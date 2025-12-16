@@ -18,10 +18,10 @@ variable "cloudflare_zone_id" {
 variable "regional_certificate" {
   description = "Regional certificate object from acm-certificates module"
   type = object({
-    id                        = string
-    arn                       = string
-    domain_name               = string
-    status                    = string
+    id          = string
+    arn         = string
+    domain_name = string
+    status      = string
     domain_validation_options = set(object({
       domain_name           = string
       resource_record_name  = string
@@ -35,10 +35,10 @@ variable "regional_certificate" {
 variable "cloudfront_certificate" {
   description = "CloudFront certificate object from acm-certificates module"
   type = object({
-    id                        = string
-    arn                       = string
-    domain_name               = string
-    status                    = string
+    id          = string
+    arn         = string
+    domain_name = string
+    status      = string
     domain_validation_options = set(object({
       domain_name           = string
       resource_record_name  = string

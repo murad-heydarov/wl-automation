@@ -19,7 +19,7 @@ resource "gitlab_project_variable" "admin_bucket" {
 }
 
 resource "gitlab_project_variable" "agent_bucket" {
-    count = contains(["agent", "mixed"], var.wl_type) ? 1 : 0
+  count = contains(["agent", "mixed"], var.wl_type) ? 1 : 0
 
   project           = var.gitlab_project_id
   key               = "${local.platform_code}_AGENT_PROD_BUCKET_NAME"

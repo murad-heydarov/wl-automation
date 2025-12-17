@@ -1,0 +1,3912 @@
+==================================================
+FILE: README.md
+==================================================
+
+# WL Automation
+
+Automated White Label deployment pipeline using Terraform.
+
+## Overview
+
+This project automates the end-to-end deployment of White Labels (Agent WL & Click WL) including:
+
+- ✅ ACM Certificates (with automatic DNS validation)
+- ✅ S3 + CloudFront (static hosting)
+- ✅ Cloudflare DNS management
+- ✅ Mailgun domain setup
+- ✅ Kubernetes Ingress
+- ✅ GitLab CI/CD variables
+
+## Project Structure
+```
+wl-automation/
+├── terraform/
+│   ├── modules/          # Reusable Terraform modules
+│   └── environments/     # Environment-specific configsbir ca
+├── scripts/              # Helper scripts
+└── docs/                 # Documentation
+```
+
+## Prerequisites
+
+- Terraform >= 1.5.0
+- AWS CLI configured
+- Cloudflare API token
+- Mailgun API key
+- GitLab API token
+- kubectl configured (for K8s module)
+
+## Quick Start
+
+See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed instructions.
+
+## Modules Status
+
+- [x] ACM Module
+- [ ] CloudFront Module
+- [ ] Cloudflare DNS Module
+- [ ] Mailgun Module
+- [ ] Kubernetes Ingress Module
+- [ ] GitLab Variables Module
+
+
+
+==================================================
+FILE: terraform/environments/prod/backend.tf
+==================================================
+
+# terraform/environments/prod/backend.tf
+
+# terraform {
+#   backend "s3" {
+#     bucket         = "terraform-state-marktech"
+#     key            = "wl-automation/terraform.tfstate"
+#     region         = "eu-central-1"
+#     encrypt        = true
+#     dynamodb_table = "terraform-state-lock"
+#   }
+# }
+
+
+
+==================================================
+FILE: terraform/environments/prod/deploy-wl.sh
+==================================================
+
+#!/bin/bash
+# deploy-wl-step-by-step.sh
+# Manual step-by-step WL deployment with detailed control
+
+set -e
+
+# ============================================================================
+# Configuration
+# ============================================================================
+WL_NAME="${1:-afftech}"
+CONFIG_FILE="wl-configs/${WL_NAME}.auto.tfvars"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+print_header() {
+    echo ""
+    echo -e "${CYAN}============================================================================${NC}"
+    echo -e "${CYAN}$1${NC}"
+    echo -e "${CYAN}============================================================================${NC}"
+}
+
+print_step() {
+    echo ""
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}▶ Step $1: $2${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ ERROR: $1${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}ℹ️  $1${NC}"
+}
+
+# ============================================================================
+# Validation
+# ============================================================================
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    print_error "Config file not found: $CONFIG_FILE"
+    echo ""
+    echo "Available configs:"
+    ls -1 wl-configs/*.auto.tfvars 2>/dev/null | sed 's/.*\//  - /' || echo "  No configs found"
+    exit 1
+fi
+
+# ============================================================================
+# Start Deployment
+# ============================================================================
+
+print_header "WL Automation - Step-by-Step Deployment"
+echo ""
+echo -e "  ${CYAN}WL Name:${NC}      $WL_NAME"
+echo -e "  ${CYAN}Config File:${NC}  $CONFIG_FILE"
+echo ""
+
+START_TIME=$(date +%s)
+STEP_START_TIME=$START_TIME
+
+step_timer() {
+    local step_end=$(date +%s)
+    local step_duration=$((step_end - STEP_START_TIME))
+    local step_minutes=$((step_duration / 60))
+    local step_seconds=$((step_duration % 60))
+    
+    print_success "Completed in ${step_minutes}m ${step_seconds}s"
+    STEP_START_TIME=$(date +%s)
+}
+
+# ============================================================================
+# STEP 1: ACM Certificates
+# ============================================================================
+print_step "1/9" "Creating ACM Certificates"
+print_info "Creating SSL certificates in eu-central-1 and us-east-1..."
+
+terraform apply \
+    -target='module.main_domain[0].module.acm.aws_acm_certificate.regional[0]' \
+    -target='module.main_domain[0].module.acm.aws_acm_certificate.cloudfront[0]' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 2: DNS Validation
+# ============================================================================
+print_step "2/9" "DNS Validation"
+print_info "Creating DNS validation records and waiting for AWS validation (3-5 min)..."
+
+terraform apply \
+    -target='module.main_domain[0].module.validation' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 3: CloudFront + S3
+# ============================================================================
+print_step "3/9" "CloudFront + S3 Distributions"
+print_info "Creating S3 buckets and CloudFront distributions (10-15 min)..."
+print_info "Distributions: admin, agent, cdn, reports"
+
+terraform apply \
+    -target='module.main_domain[0].module.admin' \
+    -target='module.main_domain[0].module.agent' \
+    -target='module.main_domain[0].module.cdn' \
+    -target='module.main_domain[0].module.reports' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 4: DNS Records
+# ============================================================================
+print_step "4/9" "DNS Records"
+print_info "Creating Cloudflare DNS records..."
+
+terraform apply \
+    -target='module.main_domain[0].cloudflare_dns_record.admin' \
+    -target='module.main_domain[0].cloudflare_dns_record.agent' \
+    -target='module.main_domain[0].cloudflare_dns_record.cdn' \
+    -target='module.main_domain[0].cloudflare_dns_record.reports' \
+    -target='module.main_domain[0].cloudflare_dns_record.api' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 5: GitLab Variables
+# ============================================================================
+print_step "5/9" "GitLab CI/CD Variables"
+print_info "Creating GitLab CI/CD variables..."
+
+terraform apply \
+    -target='module.main_domain[0].module.gitlab_variables' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 6: Mailgun Domain
+# ============================================================================
+print_step "6/9" "Mailgun Domain"
+print_info "Creating Mailgun domain and SMTP credentials..."
+
+terraform apply \
+    -target='module.main_domain[0].module.mailgun[0].mailgun_domain.wl' \
+    -target='module.main_domain[0].module.mailgun[0].random_password.smtp' \
+    -target='module.main_domain[0].module.mailgun[0].mailgun_domain_credential.smtp_user' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 7: Mailgun DNS
+# ============================================================================
+print_step "7/9" "Mailgun DNS Records"
+print_info "Creating Mailgun DNS records (MX, TXT/SPF, CNAME/DKIM)..."
+
+terraform apply \
+    -target='module.main_domain[0].module.mailgun[0].cloudflare_dns_record.mailgun_mx' \
+    -target='module.main_domain[0].module.mailgun[0].cloudflare_dns_record.mailgun_txt' \
+    -target='module.main_domain[0].module.mailgun[0].cloudflare_dns_record.mailgun_cname' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 8: Mailgun Verification
+# ============================================================================
+print_step "8/9" "Mailgun Domain Verification"
+print_info "Verifying Mailgun domain (2-5 min with v0.1.6 provider)..."
+print_info "Provider will re-check DNS every 30 seconds for up to 20 minutes"
+
+terraform apply \
+    -target='module.main_domain[0].module.mailgun[0].mailgun_domain_verification.wl' \
+    -var-file="$CONFIG_FILE" \
+    -auto-approve
+
+step_timer
+
+# ============================================================================
+# STEP 9: Final Cleanup
+# ============================================================================
+print_step "9/9" "Final Cleanup"
+print_info "Running final apply to ensure all resources are synchronized..."
+
+terraform apply -var-file="$CONFIG_FILE" -auto-approve
+
+step_timer
+
+# ============================================================================
+# Deployment Complete
+# ============================================================================
+
+END_TIME=$(date +%s)
+TOTAL_DURATION=$((END_TIME - START_TIME))
+TOTAL_MINUTES=$((TOTAL_DURATION / 60))
+TOTAL_SECONDS=$((TOTAL_DURATION % 60))
+
+print_header "Deployment Complete! 🎉"
+echo ""
+print_success "Total deployment time: ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s"
+echo ""
+
+# Display summary
+echo -e "${CYAN}📊 Deployment Summary${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# Extract domain info
+DOMAIN_INFO=$(terraform output -json 2>/dev/null | jq -r '.main_domain_summary.value // empty')
+
+if [ -n "$DOMAIN_INFO" ]; then
+    DOMAIN=$(echo "$DOMAIN_INFO" | jq -r '.domain')
+    ADMIN_FQDN=$(echo "$DOMAIN_INFO" | jq -r '.admin.fqdn')
+    AGENT_FQDN=$(echo "$DOMAIN_INFO" | jq -r '.agent.fqdn')
+    CDN_FQDN=$(echo "$DOMAIN_INFO" | jq -r '.cdn.fqdn')
+    REPORTS_FQDN=$(echo "$DOMAIN_INFO" | jq -r '.reports.fqdn')
+    API_FQDN=$(echo "$DOMAIN_INFO" | jq -r '.api_dns.fqdn')
+    
+    echo ""
+    echo -e "  ${GREEN}Domain:${NC}   $DOMAIN"
+    echo ""
+    echo -e "  ${CYAN}🔗 URLs:${NC}"
+    echo -e "    Admin:   https://$ADMIN_FQDN"
+    echo -e "    Agent:   https://$AGENT_FQDN"
+    echo -e "    CDN:     https://$CDN_FQDN"
+    echo -e "    Reports: https://$REPORTS_FQDN"
+    echo -e "    API:     https://$API_FQDN"
+    
+    # Mailgun info
+    MAILGUN_INFO=$(echo "$DOMAIN_INFO" | jq -r '.mailgun // empty')
+    if [ -n "$MAILGUN_INFO" ]; then
+        SMTP_LOGIN=$(echo "$MAILGUN_INFO" | jq -r '.smtp_login')
+        
+        echo ""
+        echo -e "  ${CYAN}📧 Mailgun (EU):${NC}"
+        echo -e "    SMTP Login: $SMTP_LOGIN"
+        echo -e "    SMTP Password: ${YELLOW}[SENSITIVE]${NC}"
+        echo -e "    ${BLUE}To view password:${NC}"
+        echo -e "      terraform output -json | jq -r '.main_domain_summary.value.mailgun.smtp_password'"
+    fi
+fi
+
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Next steps
+echo -e "${CYAN}📝 Next Steps:${NC}"
+echo -e "  1. Verify CloudFront distributions are deployed (10-15 min)"
+echo -e "  2. Test URLs above"
+echo -e "  3. Check GitLab CI/CD variables"
+echo -e "  4. Test email sending via SMTP"
+echo ""
+
+print_success "Script finished successfully! 🚀"
+
+
+==================================================
+FILE: terraform/environments/prod/main.tf
+==================================================
+
+# terraform/environments/prod/main.tf
+
+locals {
+  common_tags = {
+    Project     = "WL-Automation"
+    Environment = "production"
+    ManagedBy   = "Terraform"
+  }
+}
+
+# ============================================================================
+# Main Domain
+# ============================================================================
+module "main_domain" {
+  count  = var.domain != null ? 1 : 0
+  source = "../../modules/wl-domain"
+
+  domain             = var.domain
+  sans               = var.sans
+  cloudflare_zone_id = var.cloudflare_zone_id
+  wl_type            = var.wl_type
+  platform_code      = var.platform_code
+
+  # Subdomain configuration
+  admin_subdomain = var.admin_subdomain
+  agent_subdomain = var.agent_subdomain
+
+  # Resource creation logic based on wl_type
+  create_admin = true
+  create_agent = contains(["agent", "mixed"], var.wl_type)
+  create_click = var.wl_type == "mixed"
+
+  # ALB DNS configuration
+  alb_dns_name      = var.alb_dns_name
+  create_api_record = true # Always create api.{domain} for main domain
+
+  # GitLab CI/CD
+  gitlab_project_id          = var.gitlab_project_id
+  gitlab_variables_protected = false
+  gitlab_variables_masked    = false
+  gitlab_environment_scope   = "*"
+
+  # Mailgun Configuration
+  mail_domain = var.mail_domain
+
+  tags = merge(
+    local.common_tags,
+    {
+      WL_Name = split(".", var.domain)[0]
+      Domain  = var.domain
+      WL_Type = var.wl_type
+    }
+  )
+
+  providers = {
+    aws        = aws
+    aws.east   = aws.east
+    cloudflare = cloudflare
+  }
+}
+
+# ============================================================================
+# Separate Click Domain (for Click/Mixed WL types)
+# ============================================================================
+module "click_domain" {
+  count  = var.click_domain != null ? 1 : 0
+  source = "../../modules/wl-domain"
+
+  domain             = var.click_domain
+  cloudflare_zone_id = var.click_zone_id
+  wl_type            = "click"
+  platform_code      = var.platform_code
+
+  create_admin = false
+  create_agent = false
+  create_click = true
+
+  # ALB DNS configuration (click domain needs root record only)
+  alb_dns_name       = var.alb_dns_name
+  create_api_record  = false # No api.{click_domain}
+  create_root_record = true  # Create {click_domain} → ALB
+
+  # NO GitLab variables for separate click domain
+  gitlab_project_id          = null
+  gitlab_variables_protected = false
+  gitlab_variables_masked    = false
+  gitlab_environment_scope   = "*"
+
+  tags = merge(
+    local.common_tags,
+    {
+      WL_Name = split(".", var.click_domain)[0]
+      Domain  = var.click_domain
+      WL_Type = "click"
+    }
+  )
+
+  providers = {
+    aws        = aws
+    aws.east   = aws.east
+    cloudflare = cloudflare
+  }
+}
+
+
+==================================================
+FILE: terraform/environments/prod/outputs.tf
+==================================================
+
+# terraform/environments/prod/outputs.tf
+
+output "main_domain_summary" {
+  description = "Main domain summary"
+  value = length(module.main_domain) > 0 ? {
+    domain                     = var.domain
+    zone_id                    = module.main_domain[0].zone_id
+    regional_certificate_arn   = module.main_domain[0].regional_certificate_arn
+    cloudfront_certificate_arn = module.main_domain[0].cloudfront_certificate_arn
+    admin                      = module.main_domain[0].admin
+    agent                      = module.main_domain[0].agent
+    cdn                        = module.main_domain[0].cdn
+    reports                    = module.main_domain[0].reports
+    api_dns                    = module.main_domain[0].api_dns_record
+  } : null
+}
+
+output "click_domain_summary" {
+  description = "Click domain summary"
+  value = length(module.click_domain) > 0 ? {
+    domain                     = var.click_domain
+    zone_id                    = module.click_domain[0].zone_id
+    regional_certificate_arn   = module.click_domain[0].regional_certificate_arn
+    cloudfront_certificate_arn = module.click_domain[0].cloudfront_certificate_arn
+    click                      = module.click_domain[0].click
+    cdn                        = module.click_domain[0].cdn
+    reports                    = module.click_domain[0].reports
+    root_alb_dns               = module.click_domain[0].root_alb_dns_record
+  } : null
+}
+
+output "deployment_summary" {
+  description = "Complete deployment summary"
+  value = {
+    wl_type      = var.wl_type
+    alb_dns_name = var.alb_dns_name
+    main_domain  = length(module.main_domain) > 0 ? module.main_domain[0] : null
+    click_domain = length(module.click_domain) > 0 ? module.click_domain[0] : null
+  }
+}
+
+
+==================================================
+FILE: terraform/environments/prod/providers.tf
+==================================================
+
+# terraform/environments/prod/providers.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
+    gitlab = {
+      source  = "gitlabhq/gitlab"
+      version = "~> 17.0"
+    }
+    mailgun = {
+      source  = "murad-heydarov/mailgun"
+      version = "0.1.6"
+    }
+  }
+}
+
+# Default AWS Provider (eu-central-1)
+provider "aws" {
+  region = "eu-central-1"
+
+  default_tags {
+    tags = {
+      Project     = "WL-Automation"
+      ManagedBy   = "Terraform"
+      Environment = "production"
+    }
+  }
+}
+
+# AWS Provider for us-east-1 (CloudFront requirement)
+provider "aws" {
+  alias  = "east"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "WL-Automation"
+      ManagedBy   = "Terraform"
+      Environment = "production"
+    }
+  }
+}
+
+# Cloudflare Provider
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
+
+# GitLab Provider
+provider "gitlab" {
+  token    = var.gitlab_token
+  base_url = var.gitlab_base_url
+}
+
+# Mailgun Provider
+provider "mailgun" {
+  api_key = var.mailgun_api_key
+}
+
+
+
+==================================================
+FILE: terraform/environments/prod/variables.tf
+==================================================
+
+# terraform/environments/prod/variables.tf
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token"
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_account_id" {
+  description = "Cloudflare Account ID"
+  type        = string
+  default     = null
+}
+
+variable "domain" {
+  description = "Primary domain"
+  type        = string
+  default     = null
+}
+
+variable "sans" {
+  description = "Subject Alternative Names"
+  type        = list(string)
+  default     = null
+}
+
+variable "wl_type" {
+  description = "WL type: agent, click, or mixed"
+  type        = string
+  default     = "agent"
+
+  validation {
+    condition     = contains(["agent", "click", "mixed"], var.wl_type)
+    error_message = "Must be agent, click, or mixed."
+  }
+}
+
+variable "click_domain" {
+  description = "Click domain for separate click domain (root domain only)"
+  type        = string
+  default     = null
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID"
+  type        = string
+  default     = null
+}
+
+variable "click_zone_id" {
+  description = "Cloudflare Zone ID for click domain"
+  type        = string
+  default     = null
+}
+
+variable "platform_code" {
+  description = "Platform code (e.g., 'LIRV', 'AFFTECH') - REQUIRED"
+  type        = string
+
+  validation {
+    condition     = var.platform_code != null && length(var.platform_code) > 0
+    error_message = "platform_code is required. Example: 'LIRV', 'SLPKNG', 'AFFTECH'"
+  }
+}
+
+# ============================================================================
+# Subdomain Configuration
+# ============================================================================
+
+variable "admin_subdomain" {
+  description = "Admin subdomain (from Confluence Admin Domain)"
+  type        = string
+  default     = "admin"
+}
+
+variable "agent_subdomain" {
+  description = "Agent subdomain (from Confluence Agent Domain)"
+  type        = string
+  default     = "agent"
+}
+
+# ============================================================================
+# GitLab Configuration
+# ============================================================================
+
+variable "gitlab_token" {
+  description = "GitLab API token (required for GitLab integration)"
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "gitlab_base_url" {
+  description = "GitLab base URL"
+  type        = string
+  default     = "https://git.betlab.com/api/v4"
+}
+
+variable "gitlab_project_id" {
+  description = "GitLab project ID or path"
+  type        = string
+  default     = null
+}
+
+# ============================================================================
+# ALB Configuration
+# ============================================================================
+
+variable "alb_dns_name" {
+  description = "ALB DNS name for API ingress"
+  type        = string
+  default     = "mt-apps-ingress-978b1006d8a9d559.elb.eu-central-1.amazonaws.com"
+}
+
+# ============================================================================
+# Mailgun Configuration
+# ============================================================================
+
+variable "mailgun_api_key" {
+  description = "Mailgun API Key (EU region)"
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "mail_domain" {
+  description = "Mail support domain (e.g., 'support.afftech.xyz')"
+  type        = string
+  default     = null
+}
+
+
+
+==================================================
+FILE: terraform/environments/prod/versions.tf
+==================================================
+
+# terraform/environments/prod/versions.tf
+terraform {
+  required_version = ">= 1.5.0"
+}
+
+
+
+==================================================
+FILE: terraform/environments/prod/wl-configs/afftech.auto.tfvars
+==================================================
+
+
+# terraform/environments/prod/wl-configs/afftech.auto.tfvars
+
+
+# ============================================================================
+# AGENT WHITE LABEL CONFIGURATION
+# ============================================================================
+# Agent WLs have Admin panel and Agent panel only.
+# NO click functionality exists on Agent WLs.
+#
+# Template usage:
+#   1. Copy this file: cp templates/agent-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}     → Admin panel
+#   - agent.{domain}     → Agent panel
+#   - cdn.{domain}       → CDN distribution
+#   - reports.{domain}   → Reports
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+#   - {PLATFORM_CODE}_AGENT_PROD_BUCKET_NAME
+# ============================================================================
+
+# ============================================================================
+# REQUIRED FIELDS
+# ============================================================================
+
+domain              = "afftech.xyz"
+wl_type             = "agent"
+platform_code       = "AFFTECH"
+cloudflare_zone_id  = "84787ea66aa226406e7c736892c6d493"
+
+# ============================================================================
+# Subdomain Configuration
+# ============================================================================
+
+admin_subdomain = "admin"
+agent_subdomain = "agent"
+
+# ============================================================================
+# ALB Configuration
+# ============================================================================
+
+alb_dns_name = "mt-apps-ingress-978b1006d8a9d559.elb.eu-central-1.amazonaws.com"
+
+# ============================================================================
+# GitLab CI/CD Configuration
+# ============================================================================
+
+gitlab_project_id = "marketingtech/wl-automation"
+# click_domain  = "brandx.com"    # Separate click/tracking domain
+# click_zone_id = "e1a360e1d6c0ba3423d663c66fc8bacf"     # Cloudflare Zone ID for click domain
+
+
+mail_domain = "support.afftech.xyz"
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.com", "another.example.com"]
+
+
+==================================================
+FILE: terraform/environments/prod/wl-configs/templates/Readme.md
+==================================================
+
+# WL Configuration Guide
+
+This directory contains White Label (WL) configurations for automated infrastructure deployment.
+
+## Quick Start
+
+1. **Choose your WL type** (agent, click, or mixed)
+2. **Copy the appropriate template** from `templates/` directory
+3. **Fill in your values** from Confluence
+4. **Deploy** using Terraform
+
+## Available Templates
+
+- [`templates/agent-wl.auto.tfvars.template`](templates/agent-wl.auto.tfvars.template) - For Agent WLs (Admin + Agent panels)
+- [`templates/click-wl.auto.tfvars.template`](templates/click-wl.auto.tfvars.template) - For Click WLs (Admin panel only)
+- [`templates/mixed-wl.auto.tfvars.template`](templates/mixed-wl.auto.tfvars.template) - For Mixed WLs (Admin + Agent + Click)
+
+## How to Use Templates
+
+### Step 1: Copy Template
+```bash
+# Example: Creating config for a new Agent WL called "newwl"
+cd terraform/environments/prod/wl-configs
+cp templates/agent-wl.auto.tfvars.template newwl.auto.tfvars
+```
+
+### Step 2: Fill in Values
+
+Open `newwl.auto.tfvars` and fill in your values from Confluence:
+```hcl
+domain             = "newwl.com"        # From Confluence: Main domain
+wl_type            = "agent"            # Keep as-is from template
+platform_code      = "NEWWL"            # From Confluence: Platform code
+cloudflare_zone_id = "abc123..."        # From Cloudflare dashboard
+
+admin_subdomain = "admin"               # From Confluence: Admin Domain subdomain
+agent_subdomain = "agent"               # From Confluence: Agent Domain subdomain
+
+gitlab_project_id = "marketingtech/wl-automation"
+```
+
+### Step 3: Deploy
+```bash
+cd terraform/environments/prod
+terraform plan -var-file="wl-configs/newwl.auto.tfvars"
+terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+```
+
+## WL Type Decision Guide
+
+### When to use AGENT WL?
+- WL has Admin panel + Agent panel
+- May or may not have a separate click domain
+- Example: Liravegas
+
+### When to use CLICK WL?
+- WL has Admin panel only (no agent panel)
+- Typically has a separate click domain for tracking
+- Example: Slapkong Partners
+
+### When to use MIXED WL?
+- WL has Admin panel + Agent panel + Click on main domain (root)
+- May also have an additional separate click domain
+- Example: Owinbet
+
+## Confluence Mapping
+
+| Confluence Field | Config Variable | Example |
+|-----------------|-----------------|---------|
+| WL Name | (not used) | "Liravegas" |
+| Platform code | `platform_code` | "LIRV" |
+| Main domain | `domain` | "liravegas.com" |
+| Admin Domain | `admin_subdomain` | "admin" (from "admin.liravegas.com") |
+| Agent Domain | `agent_subdomain` | "agent" (from "agent.liravegas.com") |
+| Click-domain | `click_domain` | "trackinglira.com" |
+
+## What Gets Created?
+
+### Agent WL Resources
+- ACM Certificates (regional + CloudFront)
+- S3 Buckets + CloudFront Distributions:
+  - `admin.domain.com`
+  - `agent.domain.com`
+  - `cdn.domain.com`
+  - `reports.domain.com`
+- Cloudflare DNS records
+- GitLab CI/CD variables:
+  - `PLATFORM_CODE_PROD_BUCKET_NAME`
+  - `PLATFORM_CODE_AGENT_PROD_BUCKET_NAME`
+
+### Click WL Resources
+- ACM Certificates (regional + CloudFront)
+- S3 Buckets + CloudFront Distributions:
+  - `admin.domain.com`
+  - `cdn.domain.com`
+  - `reports.domain.com`
+- Cloudflare DNS records
+- GitLab CI/CD variables:
+  - `PLATFORM_CODE_PROD_BUCKET_NAME`
+
+### Mixed WL Resources
+- ACM Certificates (regional + CloudFront)
+- S3 Buckets + CloudFront Distributions:
+  - `admin.domain.com`
+  - `agent.domain.com`
+  - `domain.com` (root domain for click)
+  - `cdn.domain.com`
+  - `reports.domain.com`
+- Cloudflare DNS records
+- GitLab CI/CD variables:
+  - `PLATFORM_CODE_PROD_BUCKET_NAME`
+  - `PLATFORM_CODE_AGENT_PROD_BUCKET_NAME`
+
+## Troubleshooting
+
+See [TROUBLESHOOTING.md](../../../docs/TROUBLESHOOTING.md) for common issues and solutions.
+
+## Examples
+
+- [`afftech.auto.tfvars`](afftech.auto.tfvars) - Agent WL example
+- [`brandx.auto.tfvars`](brandx.auto.tfvars) - Click WL example
+- [`owinbet.auto.tfvars`](owinbet.auto.tfvars) - Mixed WL example
+
+
+==================================================
+FILE: terraform/environments/prod/wl-configs/templates/agent-wl.auto.tfvars.template
+==================================================
+
+# ============================================================================
+# AGENT WHITE LABEL CONFIGURATION
+# ============================================================================
+# Agent WLs have Admin panel and Agent panel only.
+# NO click functionality exists on Agent WLs.
+#
+# Template usage:
+#   1. Copy this file: cp templates/agent-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}     → Admin panel
+#   - agent.{domain}     → Agent panel
+#   - cdn.{domain}       → CDN distribution
+#   - reports.{domain}   → Reports
+#   - support.{domain}   → Mailgun (optional)
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+#   - {PLATFORM_CODE}_AGENT_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.com"              # Main domain from Confluence
+wl_type = "agent"                   # Always "agent" for Agent WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin")
+agent_subdomain = "agent"           # Agent subdomain (usually "agent")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.com", "another.example.com"]
+
+# ============================================================================
+# Mailgun Configuration (Optional)
+# ============================================================================
+# If you want email support functionality, uncomment and configure:
+#
+# mail_domain = "support.example.com"  # Mail domain for Mailgun
+#
+# Note: You must also set TF_VAR_mailgun_api_key environment variable
+#       or add it to terraform.tfvars (not committed to git)
+
+
+==================================================
+FILE: terraform/environments/prod/wl-configs/templates/click-wl.auto.tfvars.template
+==================================================
+
+# ============================================================================
+# CLICK WHITE LABEL CONFIGURATION
+# ============================================================================
+# Click WLs have Admin panel only.
+# Click tracking typically runs on a separate domain.
+#
+# Template usage:
+#   1. Copy this file: cp templates/click-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}              → Admin panel
+#   - cdn.{domain}                → CDN distribution
+#   - reports.{domain}            → Reports
+#   - {click_domain} (if set)     → Click tracking domain
+#   - support.{domain} (optional) → Mailgun
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.partners"         # Main domain from Confluence
+wl_type = "click"                   # Always "click" for Click WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# TYPICAL: SEPARATE CLICK DOMAIN
+# ----------------------------------------------------------------------------
+# Click WLs typically use a separate domain for tracking.
+# 
+# Real-world example - Slapkong:
+#   Main: slapkong.partners (admin panel)
+#   Tracking: trackingslapkong.com (click tracking)
+#
+# If Confluence shows a "Click-domain" field, uncomment below:
+#
+# click_domain  = "trackingexample.com"    # Separate click/tracking domain
+# click_zone_id = "click-zone-id-here"     # Cloudflare Zone ID for click domain
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.partners", "another.example.partners"]
+
+# ============================================================================
+# Mailgun Configuration (Optional)
+# ============================================================================
+# If you want email support functionality, uncomment and configure:
+#
+# mail_domain = "support.example.partners"  # Mail domain for Mailgun
+#
+# Note: You must also set TF_VAR_mailgun_api_key environment variable
+#       or add it to terraform.tfvars (not committed to git)
+
+
+==================================================
+FILE: terraform/environments/prod/wl-configs/templates/mixed-wl.auto.tfvars.template
+==================================================
+
+# ============================================================================
+# MIXED WHITE LABEL CONFIGURATION
+# ============================================================================
+# Mixed WLs have Admin panel, Agent panel, AND Click on root domain.
+# Optionally can have an ADDITIONAL separate click domain.
+#
+# Template usage:
+#   1. Copy this file: cp templates/mixed-wl.auto.tfvars.template newwl.auto.tfvars
+#   2. Fill in values from Confluence
+#   3. Remove all comments and template instructions
+#   4. Deploy: terraform apply -var-file="wl-configs/newwl.auto.tfvars"
+#
+# What will be created:
+#   - admin.{domain}              → Admin panel
+#   - agent.{domain}              → Agent panel
+#   - {domain} (ROOT)             → Click panel on main domain
+#   - cdn.{domain}                → CDN distribution
+#   - reports.{domain}            → Reports
+#   - {click_domain} (if set)     → ADDITIONAL click tracking domain
+#   - support.{domain} (optional) → Mailgun
+#
+# GitLab CI/CD variables created:
+#   - {PLATFORM_CODE}_PROD_BUCKET_NAME
+#   - {PLATFORM_CODE}_AGENT_PROD_BUCKET_NAME
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# REQUIRED FIELDS
+# ----------------------------------------------------------------------------
+
+domain = "example.com"              # Main domain from Confluence
+wl_type = "mixed"                   # Always "mixed" for Mixed WLs
+
+platform_code = "EXMP"              # Platform code from Confluence (uppercase)
+
+cloudflare_zone_id = "zone-id-here" # Cloudflare Zone ID for main domain
+
+admin_subdomain = "admin"           # Admin subdomain (usually "admin" or "adminagent")
+agent_subdomain = "agent"           # Agent subdomain (usually "agent")
+
+gitlab_project_id = 12345           # GitLab project ID for CI/CD integration
+
+# ----------------------------------------------------------------------------
+# OPTIONAL: ADDITIONAL SEPARATE CLICK DOMAIN
+# ----------------------------------------------------------------------------
+# Mixed WLs ALREADY have click on the main domain (root domain).
+# This field is for an ADDITIONAL separate click domain if needed.
+#
+# IMPORTANT: 
+#   - Main domain click: example.com (root) ← ALREADY EXISTS
+#   - This field adds: ADDITIONAL tracking domain
+#
+# Real-world example - Owinbet:
+#   Main: owinbet.com (admin + agent + click on root)
+#   Additional: vbnmmmbv.com (extra click tracking domain)
+#
+# If Confluence shows "Click Domain (NEW)", uncomment below:
+#
+# click_domain  = "additional-tracking.com"    # ADDITIONAL click domain
+# click_zone_id = "click-zone-id-here"         # Cloudflare Zone ID
+
+# ----------------------------------------------------------------------------
+# OPTIONAL FIELDS
+# ----------------------------------------------------------------------------
+
+# Custom Subject Alternative Names (SANs) for SSL certificate
+# Uncomment if you need additional domains in the certificate
+#
+# sans = ["www.example.com", "another.example.com"]
+
+# ============================================================================
+# Mailgun Configuration (Optional)
+# ============================================================================
+# If you want email support functionality, uncomment and configure:
+#
+# mail_domain = "support.example.com"  # Mail domain for Mailgun
+#
+# Note: You must also set TF_VAR_mailgun_api_key environment variable
+#       or add it to terraform.tfvars (not committed to git)
+
+
+==================================================
+FILE: terraform/modules/acm-certificates/README.md
+==================================================
+
+# ACM Certificate Module
+
+Automatic AWS ACM certificate creation with DNS validation via Cloudflare.
+
+## Overview
+
+This module creates SSL/TLS certificates in AWS Certificate Manager (ACM) with automatic DNS validation using Cloudflare. It supports both regional certificates (for ALB/ELB) and CloudFront certificates (required to be in us-east-1).
+
+## Features
+
+- ✅ **Regional Certificate**: Created in `eu-central-1` for ALB/ELB
+- ✅ **CloudFront Certificate**: Created in `us-east-1` for CloudFront distributions
+- ✅ **Automatic DNS Validation**: Creates CNAME records in Cloudflare automatically
+- ✅ **Auto-Wait**: Waits until certificates are fully validated (status: ISSUED)
+- ✅ **Subject Alternative Names**: Support for wildcard and multiple domains
+- ✅ **Zero Downtime**: Uses `create_before_destroy` lifecycle
+- ✅ **Certificate Transparency**: AWS default logging enabled (best practice)
+
+## Usage
+```hcl
+module "acm" {
+  source = "../../modules/acm"
+
+  domain_name = "example.com"
+  subject_alternative_names = [
+    "*.example.com",
+    "www.example.com"
+  ]
+
+  cloudflare_zone_id = "abc123def456..."
+
+  tags = {
+    Environment = "production"
+    Project     = "wl-automation"
+    WL_Name     = "example"
+  }
+
+  # Required: Pass providers from parent
+  providers = {
+    aws            = aws
+    aws.east       = aws.east
+    cloudflare     = cloudflare
+  }
+}
+```
+
+## Requirements
+
+| Name | Version |
+|------|---------|
+| terraform | >= 1.5.0 |
+| aws | ~> 5.0 |
+| cloudflare | ~> 4.0 |
+
+## Providers
+
+This module requires **three providers** to be passed from the parent configuration:
+
+- `aws` - Default AWS provider (eu-central-1)
+- `aws.east` - AWS provider alias for us-east-1 (CloudFront requirement)
+- `cloudflare` - Cloudflare provider for DNS management
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| domain_name | Primary domain name | `string` | n/a | yes |
+| subject_alternative_names | List of SANs | `list(string)` | `[]` | no |
+| cloudflare_zone_id | Cloudflare Zone ID | `string` | n/a | yes |
+| tags | Additional resource tags | `map(string)` | `{}` | no |
+| validation_timeout | Max validation wait time | `string` | `"45m"` | no |
+| create_regional_cert | Create regional cert | `bool` | `true` | no |
+| create_cloudfront_cert | Create CloudFront cert | `bool` | `true` | no |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| regional_certificate_arn | Regional certificate ARN (for ALB) |
+| cloudfront_certificate_arn | CloudFront certificate ARN (for CloudFront) |
+| regional_validation_records | DNS validation records (regional) |
+| cloudfront_validation_records | DNS validation records (CloudFront) |
+| summary | Complete summary of certificates |
+
+## How It Works
+
+1. **Certificate Creation**: Creates ACM certificates in both regions
+2. **DNS Record Creation**: Automatically adds CNAME validation records to Cloudflare
+3. **Validation Wait**: Terraform waits until AWS validates the certificates (max 45 minutes)
+4. **Output ARNs**: Returns certificate ARNs ready to use with ALB/CloudFront
+
+## Certificate Transparency Logging
+
+This module uses AWS default behavior for Certificate Transparency logging, which is **ENABLED**. This is required for modern browsers (Chrome, Firefox, Safari) and is considered best practice for security.
+
+> **Note**: AWS Provider 5.x automatically enables Certificate Transparency logging by default. No additional configuration is needed.
+
+## Example Output
+```hcl
+summary = {
+  domain_name                = "example.com"
+  subject_alternative_names  = ["*.example.com"]
+  regional_enabled           = true
+  cloudfront_enabled         = true
+  regional_certificate_arn   = "arn:aws:acm:eu-central-1:..."
+  cloudfront_certificate_arn = "arn:aws:acm:us-east-1:..."
+  validation_records_count   = 4
+}
+```
+
+## Notes
+
+- Certificate validation typically takes 5-30 minutes
+- DNS records are automatically removed when destroying the module
+- CloudFront **requires** certificates to be in us-east-1
+- Both certificates use the same validation records (AWS deduplicates)
+- Certificates are tagged with module metadata for tracking
+- Certificate Transparency logging is enabled by AWS default (no action needed)
+
+## Troubleshooting
+
+**Validation timeout:**
+```
+Error: timeout while waiting for state to become 'ISSUED'
+```
+Solution: Check Cloudflare DNS records are properly created. Sometimes DNS propagation is slow.
+
+**Zone ID not found:**
+```
+Error: Cloudflare Zone ID must be 32 hexadecimal characters
+```
+Solution: Get zone ID from Cloudflare dashboard or use `data "cloudflare_zone"` in parent.
+
+## License
+
+Internal use only - Gr8 Tech
+
+
+
+==================================================
+FILE: terraform/modules/acm-certificates/main.tf
+==================================================
+
+# terraform/modules/acm-certificates/main.tf
+
+# ============================================================================
+# Regional ACM Certificate (eu-central-1)
+# For: ALB, ELB, API Gateway
+# ============================================================================
+
+resource "aws_acm_certificate" "regional" {
+  count = var.create_regional_cert ? 1 : 0
+
+  domain_name               = var.domain_name
+  subject_alternative_names = var.subject_alternative_names
+  validation_method         = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name             = "${var.domain_name}-regional"
+      CertificateType  = "Regional"
+      Region           = "eu-central-1"
+      ValidationMethod = "DNS"
+    }
+  )
+}
+
+# ============================================================================
+# CloudFront ACM Certificate (us-east-1)
+# ============================================================================
+
+resource "aws_acm_certificate" "cloudfront" {
+  count    = var.create_cloudfront_cert ? 1 : 0
+  provider = aws.east
+
+  domain_name               = var.domain_name
+  subject_alternative_names = var.subject_alternative_names
+  validation_method         = "DNS"
+
+  lifecycle { create_before_destroy = true }
+
+  tags = merge(
+    var.tags,
+    {
+      Name             = "${var.domain_name}-cloudfront"
+      CertificateType  = "CloudFront"
+      Region           = "us-east-1"
+      ValidationMethod = "DNS"
+    }
+  )
+}
+
+
+
+==================================================
+FILE: terraform/modules/acm-certificates/outputs.tf
+==================================================
+
+# terraform/modules/acm-certificates/outputs.tf
+
+# ============================================================================
+# Regional Certificate Outputs
+# ============================================================================
+
+output "regional_certificate" {
+  description = "Regional certificate complete details"
+  value = var.create_regional_cert ? {
+    id                        = aws_acm_certificate.regional[0].id
+    arn                       = aws_acm_certificate.regional[0].arn
+    domain_name               = aws_acm_certificate.regional[0].domain_name
+    status                    = aws_acm_certificate.regional[0].status
+    domain_validation_options = aws_acm_certificate.regional[0].domain_validation_options
+  } : null
+}
+
+output "regional_certificate_arn" {
+  description = "Regional certificate ARN (for quick reference)"
+  value       = var.create_regional_cert ? aws_acm_certificate.regional[0].arn : null
+}
+
+# ============================================================================
+# CloudFront Certificate Outputs
+# ============================================================================
+
+output "cloudfront_certificate" {
+  description = "CloudFront certificate complete details"
+  value = var.create_cloudfront_cert ? {
+    id                        = aws_acm_certificate.cloudfront[0].id
+    arn                       = aws_acm_certificate.cloudfront[0].arn
+    domain_name               = aws_acm_certificate.cloudfront[0].domain_name
+    status                    = aws_acm_certificate.cloudfront[0].status
+    domain_validation_options = aws_acm_certificate.cloudfront[0].domain_validation_options
+  } : null
+}
+
+output "cloudfront_certificate_arn" {
+  description = "CloudFront certificate ARN (for quick reference)"
+  value       = var.create_cloudfront_cert ? aws_acm_certificate.cloudfront[0].arn : null
+}
+
+
+==================================================
+FILE: terraform/modules/acm-certificates/variables.tf
+==================================================
+
+# terraform/modules/acm-certificates/variables.tf
+
+variable "domain_name" {
+  description = "Primary domain name for ACM certificate (e.g., 'afftech.xyz')"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]*[a-z0-9]\\.[a-z]{2,}$", var.domain_name))
+    error_message = "Domain name must be valid format (e.g., 'example.com')."
+  }
+}
+
+variable "subject_alternative_names" {
+  description = "Subject Alternative Names (e.g., ['*.example.com'])"
+  type        = list(string)
+  default     = []
+}
+
+variable "create_regional_cert" {
+  description = "Create regional certificate (eu-central-1)"
+  type        = bool
+  default     = true
+}
+
+variable "create_cloudfront_cert" {
+  description = "Create CloudFront certificate (us-east-1)"
+  type        = bool
+  default     = true
+}
+
+variable "tags" {
+  description = "Additional tags for certificates"
+  type        = map(string)
+  default     = {}
+}
+
+
+==================================================
+FILE: terraform/modules/acm-certificates/versions.tf
+==================================================
+
+# terraform/modules/acm-certificates/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      version               = "~> 6.0"
+      configuration_aliases = [aws.east]
+    }
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/acm-dns-validation/README.md
+==================================================
+
+# ACM Certificate Module
+
+Automatic AWS ACM certificate creation with DNS validation via Cloudflare.
+
+## Overview
+
+This module creates SSL/TLS certificates in AWS Certificate Manager (ACM) with automatic DNS validation using Cloudflare. It supports both regional certificates (for ALB/ELB) and CloudFront certificates (required to be in us-east-1).
+
+## Features
+
+- ✅ **Regional Certificate**: Created in `eu-central-1` for ALB/ELB
+- ✅ **CloudFront Certificate**: Created in `us-east-1` for CloudFront distributions
+- ✅ **Automatic DNS Validation**: Creates CNAME records in Cloudflare automatically
+- ✅ **Auto-Wait**: Waits until certificates are fully validated (status: ISSUED)
+- ✅ **Subject Alternative Names**: Support for wildcard and multiple domains
+- ✅ **Zero Downtime**: Uses `create_before_destroy` lifecycle
+- ✅ **Certificate Transparency**: AWS default logging enabled (best practice)
+
+## Usage
+```hcl
+module "acm" {
+  source = "../../modules/acm"
+
+  domain_name = "example.com"
+  subject_alternative_names = [
+    "*.example.com",
+    "www.example.com"
+  ]
+
+  cloudflare_zone_id = "abc123def456..."
+
+  tags = {
+    Environment = "production"
+    Project     = "wl-automation"
+    WL_Name     = "example"
+  }
+
+  # Required: Pass providers from parent
+  providers = {
+    aws            = aws
+    aws.east       = aws.east
+    cloudflare     = cloudflare
+  }
+}
+```
+
+## Requirements
+
+| Name | Version |
+|------|---------|
+| terraform | >= 1.5.0 |
+| aws | ~> 5.0 |
+| cloudflare | ~> 4.0 |
+
+## Providers
+
+This module requires **three providers** to be passed from the parent configuration:
+
+- `aws` - Default AWS provider (eu-central-1)
+- `aws.east` - AWS provider alias for us-east-1 (CloudFront requirement)
+- `cloudflare` - Cloudflare provider for DNS management
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| domain_name | Primary domain name | `string` | n/a | yes |
+| subject_alternative_names | List of SANs | `list(string)` | `[]` | no |
+| cloudflare_zone_id | Cloudflare Zone ID | `string` | n/a | yes |
+| tags | Additional resource tags | `map(string)` | `{}` | no |
+| validation_timeout | Max validation wait time | `string` | `"45m"` | no |
+| create_regional_cert | Create regional cert | `bool` | `true` | no |
+| create_cloudfront_cert | Create CloudFront cert | `bool` | `true` | no |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| regional_certificate_arn | Regional certificate ARN (for ALB) |
+| cloudfront_certificate_arn | CloudFront certificate ARN (for CloudFront) |
+| regional_validation_records | DNS validation records (regional) |
+| cloudfront_validation_records | DNS validation records (CloudFront) |
+| summary | Complete summary of certificates |
+
+## How It Works
+
+1. **Certificate Creation**: Creates ACM certificates in both regions
+2. **DNS Record Creation**: Automatically adds CNAME validation records to Cloudflare
+3. **Validation Wait**: Terraform waits until AWS validates the certificates (max 45 minutes)
+4. **Output ARNs**: Returns certificate ARNs ready to use with ALB/CloudFront
+
+## Certificate Transparency Logging
+
+This module uses AWS default behavior for Certificate Transparency logging, which is **ENABLED**. This is required for modern browsers (Chrome, Firefox, Safari) and is considered best practice for security.
+
+> **Note**: AWS Provider 5.x automatically enables Certificate Transparency logging by default. No additional configuration is needed.
+
+## Example Output
+```hcl
+summary = {
+  domain_name                = "example.com"
+  subject_alternative_names  = ["*.example.com"]
+  regional_enabled           = true
+  cloudfront_enabled         = true
+  regional_certificate_arn   = "arn:aws:acm:eu-central-1:..."
+  cloudfront_certificate_arn = "arn:aws:acm:us-east-1:..."
+  validation_records_count   = 4
+}
+```
+
+## Notes
+
+- Certificate validation typically takes 5-30 minutes
+- DNS records are automatically removed when destroying the module
+- CloudFront **requires** certificates to be in us-east-1
+- Both certificates use the same validation records (AWS deduplicates)
+- Certificates are tagged with module metadata for tracking
+- Certificate Transparency logging is enabled by AWS default (no action needed)
+
+## Troubleshooting
+
+**Validation timeout:**
+```
+Error: timeout while waiting for state to become 'ISSUED'
+```
+Solution: Check Cloudflare DNS records are properly created. Sometimes DNS propagation is slow.
+
+**Zone ID not found:**
+```
+Error: Cloudflare Zone ID must be 32 hexadecimal characters
+```
+Solution: Get zone ID from Cloudflare dashboard or use `data "cloudflare_zone"` in parent.
+
+## License
+
+Internal use only - Gr8 Tech
+
+
+
+==================================================
+FILE: terraform/modules/acm-dns-validation/main.tf
+==================================================
+
+# terraform/modules/acm-dns-validation/main.tf
+
+# ============================================================================
+# Locals: Extract and Deduplicate Validation Records
+# ============================================================================
+
+locals {
+  # Extract regional validation records
+  regional_groups = var.regional_certificate != null ? {
+    for dvo in var.regional_certificate.domain_validation_options :
+    trimsuffix(dvo.resource_record_name, ".") => {
+      name    = trimsuffix(dvo.resource_record_name, ".")
+      content = trimsuffix(dvo.resource_record_value, ".")
+      type    = dvo.resource_record_type
+      domain  = dvo.domain_name
+      source  = "regional"
+    }...
+  } : {}
+
+  regional_records = {
+    for k, v in local.regional_groups :
+    k => v[length(v) - 1]
+  }
+
+  cloudfront_groups = var.cloudfront_certificate != null ? {
+    for dvo in var.cloudfront_certificate.domain_validation_options :
+    trimsuffix(dvo.resource_record_name, ".") => {
+      name    = trimsuffix(dvo.resource_record_name, ".")
+      content = trimsuffix(dvo.resource_record_value, ".")
+      type    = dvo.resource_record_type
+      domain  = dvo.domain_name
+      source  = "cloudfront"
+    }...
+  } : {}
+
+  cloudfront_records = {
+    for k, v in local.cloudfront_groups :
+    k => v[length(v) - 1]
+  }
+
+  all_validation_records = merge(
+    local.regional_records,
+    local.cloudfront_records
+  )
+}
+
+# ============================================================================
+# Cloudflare DNS Validation Records
+# Creates deduplicated CNAME records for ACM validation
+# ============================================================================
+
+resource "cloudflare_dns_record" "validation" {
+  for_each = local.all_validation_records
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.name
+  content = each.value.content
+  type    = each.value.type
+  ttl     = 1
+  proxied = false
+
+  comment = "ACM validation - ${each.value.domain} (${each.value.source})"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ============================================================================
+# Certificate Validation Wait
+# Waits for AWS to validate certificates via DNS
+# ============================================================================
+
+resource "aws_acm_certificate_validation" "regional" {
+  count = var.regional_certificate != null ? 1 : 0
+
+  certificate_arn = var.regional_certificate.arn
+  validation_record_fqdns = [
+    for rec in cloudflare_dns_record.validation : rec.name
+  ]
+
+  timeouts {
+    create = var.validation_timeout
+  }
+
+  depends_on = [cloudflare_dns_record.validation]
+}
+
+resource "aws_acm_certificate_validation" "cloudfront" {
+  count    = var.cloudfront_certificate != null ? 1 : 0
+  provider = aws.east
+
+  certificate_arn = var.cloudfront_certificate.arn
+
+  validation_record_fqdns = [
+    for rec in cloudflare_dns_record.validation : rec.name
+  ]
+
+  timeouts {
+    create = var.validation_timeout
+  }
+
+  depends_on = [cloudflare_dns_record.validation]
+}
+
+
+
+==================================================
+FILE: terraform/modules/acm-dns-validation/outputs.tf
+==================================================
+
+# terraform/modules/acm-dns-validation/outputs.tf
+
+# ============================================================================
+# Validation Records Outputs
+# ============================================================================
+
+output "validation_records" {
+  description = "DNS validation records created in Cloudflare"
+  value = {
+    for key, record in cloudflare_dns_record.validation : key => {
+      name    = record.name
+      content = record.content
+      type    = record.type
+      domain  = local.all_validation_records[key].domain
+      source  = local.all_validation_records[key].source
+    }
+  }
+}
+
+output "validation_records_count" {
+  description = "Number of unique DNS validation records created"
+  value       = length(cloudflare_dns_record.validation)
+}
+
+# ============================================================================
+# Validated Certificate ARNs
+# ============================================================================
+
+output "regional_certificate_arn" {
+  description = "Validated regional certificate ARN (ready to use)"
+  value       = var.regional_certificate != null ? aws_acm_certificate_validation.regional[0].certificate_arn : null
+}
+
+output "cloudfront_certificate_arn" {
+  description = "Validated CloudFront certificate ARN (ready to use)"
+  value       = var.cloudfront_certificate != null ? aws_acm_certificate_validation.cloudfront[0].certificate_arn : null
+}
+
+# ============================================================================
+# Debug Information
+# ============================================================================
+
+output "deduplication_info" {
+  description = "Shows how many records were deduplicated"
+  value = {
+    regional_records_count   = length(local.regional_records)
+    cloudfront_records_count = length(local.cloudfront_records)
+    total_unique_records     = length(local.all_validation_records)
+    duplicates_removed       = (length(local.regional_records) + length(local.cloudfront_records)) - length(local.all_validation_records)
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/acm-dns-validation/variables.tf
+==================================================
+
+# terraform/modules/acm-dns-validation/variables.tf
+
+variable "domain_name" {
+  description = "Domain name being validated"
+  type        = string
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID where DNS records will be created"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-f0-9]{32}$", var.cloudflare_zone_id))
+    error_message = "Cloudflare Zone ID must be 32 hexadecimal characters."
+  }
+}
+
+variable "regional_certificate" {
+  description = "Regional certificate object from acm-certificates module"
+  type = object({
+    id          = string
+    arn         = string
+    domain_name = string
+    status      = string
+    domain_validation_options = set(object({
+      domain_name           = string
+      resource_record_name  = string
+      resource_record_type  = string
+      resource_record_value = string
+    }))
+  })
+  default = null
+}
+
+variable "cloudfront_certificate" {
+  description = "CloudFront certificate object from acm-certificates module"
+  type = object({
+    id          = string
+    arn         = string
+    domain_name = string
+    status      = string
+    domain_validation_options = set(object({
+      domain_name           = string
+      resource_record_name  = string
+      resource_record_type  = string
+      resource_record_value = string
+    }))
+  })
+  default = null
+}
+
+variable "validation_timeout" {
+  description = "Maximum time to wait for certificate validation"
+  type        = string
+  default     = "45m"
+
+  validation {
+    condition     = can(regex("^[0-9]+(m|h)$", var.validation_timeout))
+    error_message = "Timeout must be in format like '45m' or '1h'."
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/acm-dns-validation/versions.tf
+==================================================
+
+# terraform/modules/acm-dns-validation/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      version               = "~> 6.0"
+      configuration_aliases = [aws.east]
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/cloudfront-s3-website/README.md
+==================================================
+
+# CloudFront + S3 Website Module
+
+Simple module for creating CloudFront distribution with S3 origin for static websites.
+
+## Features
+
+- ✅ S3 bucket with website configuration
+- ✅ CloudFront distribution with custom domain
+- ✅ Origin Access Identity (OAI) for secure S3 access
+- ✅ Custom error responses (SPA support)
+- ✅ Compression enabled
+- ✅ HTTPS redirect
+- ✅ Configurable TTL
+
+## Usage
+```hcl
+module "admin_cloudfront" {
+  source = "../../modules/cloudfront-s3-website"
+
+  domain_name     = "afftech.xyz"
+  subdomain       = "admin"
+  certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxx"
+
+  tags = {
+    Environment = "production"
+    Project     = "WL-Automation"
+  }
+}
+```
+
+## Inputs
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `domain_name` | string | - | Primary domain (e.g., 'afftech.xyz') |
+| `subdomain` | string | - | Subdomain (e.g., 'admin') |
+| `certificate_arn` | string | - | ACM certificate ARN (us-east-1) |
+| `s3_index_document` | string | `"index.html"` | S3 index document |
+| `s3_error_document` | string | `"index.html"` | S3 error document |
+| `enable_versioning` | bool | `false` | Enable S3 versioning |
+| `enable_compression` | bool | `true` | Enable CloudFront compression |
+| `viewer_protocol_policy` | string | `"redirect-to-https"` | Viewer protocol policy |
+| `price_class` | string | `"PriceClass_100"` | CloudFront price class |
+| `min_ttl` | number | `0` | Minimum TTL |
+| `default_ttl` | number | `3600` | Default TTL (1 hour) |
+| `max_ttl` | number | `86400` | Maximum TTL (24 hours) |
+| `tags` | map(string) | `{}` | Resource tags |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| `fqdn` | Full domain name (e.g., admin.afftech.xyz) |
+| `s3_bucket_name` | S3 bucket name |
+| `s3_bucket_arn` | S3 bucket ARN |
+| `cloudfront_distribution_id` | CloudFront distribution ID |
+| `cloudfront_domain_name` | CloudFront domain (e.g., d123.cloudfront.net) |
+| `cloudfront_hosted_zone_id` | CloudFront hosted zone ID |
+
+## What gets created
+```
+admin.afftech.xyz
+├── S3 Bucket: admin.afftech.xyz
+│   ├── Website hosting enabled
+│   ├── Public access blocked
+│   └── Bucket policy (CloudFront OAI access)
+│
+└── CloudFront Distribution
+    ├── Origin: S3 bucket via OAI
+    ├── Alias: admin.afftech.xyz
+    ├── Certificate: ACM (us-east-1)
+    ├── Default behavior: redirect-to-https
+    └── Custom error: 403 → 200 (SPA support)
+```
+
+## Notes
+
+- S3 bucket name = FQDN (e.g., `admin.afftech.xyz`)
+- CloudFront uses SNI (no dedicated IP)
+- Compression enabled by default
+- Custom error response for SPA apps (403 → index.html)
+
+
+==================================================
+FILE: terraform/modules/cloudfront-s3-website/main.tf
+==================================================
+
+# terraform/modules/cloudfront-s3-website/main.tf
+
+# ============================================================================
+# Local Variables
+# ============================================================================
+
+locals {
+  # Support both subdomain and root domain
+  # subdomain = "@" → root domain (e.g., "trackingslapkong.com")
+  # subdomain = "admin" → subdomain (e.g., "admin.afftech.xyz")
+  fqdn = var.subdomain == "@" ? var.domain_name : "${var.subdomain}.${var.domain_name}"
+}
+
+# ============================================================================
+# S3 Bucket
+# ============================================================================
+
+resource "aws_s3_bucket" "website" {
+  bucket = local.fqdn
+
+  tags = merge(
+    var.tags,
+    {
+      Name      = local.fqdn
+      Subdomain = var.subdomain
+      Domain    = var.domain_name
+    }
+  )
+}
+
+# ============================================================================
+# S3 Bucket Website Configuration
+# ============================================================================
+
+resource "aws_s3_bucket_website_configuration" "website" {
+  bucket = aws_s3_bucket.website.id
+
+  index_document {
+    suffix = var.s3_index_document
+  }
+
+  error_document {
+    key = var.s3_error_document
+  }
+}
+
+# ============================================================================
+# S3 Bucket Versioning
+# ============================================================================
+
+resource "aws_s3_bucket_versioning" "website" {
+  bucket = aws_s3_bucket.website.id
+
+  versioning_configuration {
+    status = var.enable_versioning ? "Enabled" : "Suspended"
+  }
+}
+
+# ============================================================================
+# S3 Bucket Public Access Block
+# ============================================================================
+
+resource "aws_s3_bucket_public_access_block" "website" {
+  bucket = aws_s3_bucket.website.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ============================================================================
+# CloudFront Origin Access Control (OAC)
+# ============================================================================
+
+resource "aws_cloudfront_origin_access_control" "website" {
+  name                              = var.oac_name != "" ? var.oac_name : "${local.fqdn}-oac"
+  description                       = "OAC for ${local.fqdn} S3 origin"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# ============================================================================
+# CloudFront Distribution
+# ============================================================================
+
+resource "aws_cloudfront_distribution" "website" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  comment             = "CloudFront distribution for ${local.fqdn}"
+  default_root_object = "index.html"
+  aliases             = [local.fqdn]
+  price_class         = var.price_class
+
+  # Origin (S3) – OAC
+  origin {
+    domain_name              = aws_s3_bucket.website.bucket_regional_domain_name
+    origin_id                = "S3-${local.fqdn}"
+    origin_access_control_id = aws_cloudfront_origin_access_control.website.id
+  }
+
+  # Default cache behavior
+  default_cache_behavior {
+    target_origin_id       = "S3-${local.fqdn}"
+    viewer_protocol_policy = var.viewer_protocol_policy
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = var.enable_compression
+
+    forwarded_values {
+      query_string = false
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    min_ttl     = var.min_ttl
+    default_ttl = var.default_ttl
+    max_ttl     = var.max_ttl
+  }
+
+  # Custom error responses
+  dynamic "custom_error_response" {
+    for_each = var.custom_error_responses
+
+    content {
+      error_code         = custom_error_response.value.error_code
+      response_code      = custom_error_response.value.response_code
+      response_page_path = custom_error_response.value.response_page_path
+    }
+  }
+
+  # SSL certificate
+  viewer_certificate {
+    acm_certificate_arn      = var.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  # Geo restrictions (none)
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name      = local.fqdn
+      Subdomain = var.subdomain
+      Domain    = var.domain_name
+    }
+  )
+}
+
+# ============================================================================
+# S3 Bucket Policy — CloudFront Service Principal + SourceArn
+# ============================================================================
+
+data "aws_iam_policy_document" "s3_cloudfront_access" {
+  statement {
+    sid    = "AllowCloudFrontServicePrincipalReadOnly"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    actions = [
+      "s3:GetObject"
+    ]
+
+    resources = [
+      "${aws_s3_bucket.website.arn}/*"
+    ]
+
+    # Yalnız bu CloudFront distribution istifadə edə bilsin
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.website.arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "website" {
+  bucket = aws_s3_bucket.website.id
+  policy = data.aws_iam_policy_document.s3_cloudfront_access.json
+
+  depends_on = [
+    aws_s3_bucket_public_access_block.website
+  ]
+}
+
+
+
+==================================================
+FILE: terraform/modules/cloudfront-s3-website/outputs.tf
+==================================================
+
+# terraform/modules/cloudfront-s3-website/outputs.tf
+
+# ============================================================================
+# General Outputs
+# ============================================================================
+
+output "fqdn" {
+  description = "Full domain name (e.g., admin.afftech.xyz)"
+  value       = local.fqdn
+}
+
+# ============================================================================
+# S3 Outputs
+# ============================================================================
+
+output "s3_bucket_id" {
+  description = "S3 bucket ID"
+  value       = aws_s3_bucket.website.id
+}
+
+output "s3_bucket_name" {
+  description = "S3 bucket name"
+  value       = aws_s3_bucket.website.bucket
+}
+
+output "s3_bucket_arn" {
+  description = "S3 bucket ARN"
+  value       = aws_s3_bucket.website.arn
+}
+
+output "s3_bucket_regional_domain_name" {
+  description = "S3 bucket regional domain name"
+  value       = aws_s3_bucket.website.bucket_regional_domain_name
+}
+
+output "s3_website_endpoint" {
+  description = "S3 website endpoint"
+  value       = aws_s3_bucket_website_configuration.website.website_endpoint
+}
+
+# ============================================================================
+# CloudFront Outputs
+# ============================================================================
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID"
+  value       = aws_cloudfront_distribution.website.id
+}
+
+output "cloudfront_distribution_arn" {
+  description = "CloudFront distribution ARN"
+  value       = aws_cloudfront_distribution.website.arn
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFront domain name (e.g., d111111abcdef8.cloudfront.net)"
+  value       = aws_cloudfront_distribution.website.domain_name
+}
+
+output "cloudfront_hosted_zone_id" {
+  description = "CloudFront hosted zone ID (for Route53/DNS)"
+  value       = aws_cloudfront_distribution.website.hosted_zone_id
+}
+
+output "cloudfront_status" {
+  description = "CloudFront distribution status"
+  value       = aws_cloudfront_distribution.website.status
+}
+
+# ============================================================================
+# OAC Outputs
+# ============================================================================
+
+output "oac_id" {
+  description = "Origin Access Control ID"
+  value       = aws_cloudfront_origin_access_control.website.id
+}
+
+output "oac_name" {
+  description = "Origin Access Control name"
+  value       = aws_cloudfront_origin_access_control.website.name
+}
+
+output "oac_etag" {
+  description = "Origin Access Control ETag"
+  value       = aws_cloudfront_origin_access_control.website.etag
+}
+
+
+
+==================================================
+FILE: terraform/modules/cloudfront-s3-website/variables.tf
+==================================================
+
+# terraform/modules/cloudfront-s3-website/variables.tf
+
+# ============================================================================
+# Core Configuration
+# ============================================================================
+
+variable "domain_name" {
+  description = "Primary domain name (e.g., 'afftech.xyz')"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]\\.[a-z]{2,}$", var.domain_name))
+    error_message = "Domain must be valid format (e.g., 'example.com')."
+  }
+}
+
+variable "subdomain" {
+  description = "Subdomain prefix (e.g., 'admin' for admin.afftech.xyz) or '@' for root domain"
+  type        = string
+
+  validation {
+    condition     = can(regex("^(@|[a-z0-9-]+)$", var.subdomain))
+    error_message = "Subdomain must contain only lowercase letters, numbers, hyphens, or '@' for root domain."
+  }
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN (must be in us-east-1 for CloudFront)"
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9-]+$", var.certificate_arn))
+    error_message = "Certificate ARN must be valid us-east-1 ACM certificate."
+  }
+}
+
+# ============================================================================
+# S3 Configuration
+# ============================================================================
+
+variable "s3_index_document" {
+  description = "S3 website index document"
+  type        = string
+  default     = "index.html"
+}
+
+variable "s3_error_document" {
+  description = "S3 website error document"
+  type        = string
+  default     = "index.html"
+}
+
+variable "enable_versioning" {
+  description = "Enable S3 versioning"
+  type        = bool
+  default     = false
+}
+
+# ============================================================================
+# CloudFront Configuration
+# ============================================================================
+
+variable "enable_compression" {
+  description = "Enable CloudFront compression"
+  type        = bool
+  default     = true
+}
+
+variable "viewer_protocol_policy" {
+  description = "Viewer protocol policy"
+  type        = string
+  default     = "redirect-to-https"
+
+  validation {
+    condition     = contains(["allow-all", "https-only", "redirect-to-https"], var.viewer_protocol_policy)
+    error_message = "Must be 'allow-all', 'https-only', or 'redirect-to-https'."
+  }
+}
+
+variable "price_class" {
+  description = "CloudFront price class"
+  type        = string
+  default     = "PriceClass_All"
+
+  validation {
+    condition     = contains(["PriceClass_All", "PriceClass_200", "PriceClass_100"], var.price_class)
+    error_message = "Must be valid price class."
+  }
+}
+
+variable "min_ttl" {
+  description = "Minimum TTL for CloudFront cache"
+  type        = number
+  default     = 0
+}
+
+variable "default_ttl" {
+  description = "Default TTL for CloudFront cache"
+  type        = number
+  default     = 3600
+}
+
+variable "max_ttl" {
+  description = "Maximum TTL for CloudFront cache"
+  type        = number
+  default     = 86400
+}
+
+variable "custom_error_responses" {
+  description = "Custom error responses for CloudFront"
+  type = list(object({
+    error_code         = number
+    response_code      = number
+    response_page_path = string
+  }))
+  default = [
+    {
+      error_code         = 403
+      response_code      = 200
+      response_page_path = "/index.html"
+    }
+  ]
+}
+
+# ============================================================================
+# Tags
+# ============================================================================
+
+variable "tags" {
+  description = "Resource tags"
+  type        = map(string)
+  default     = {}
+}
+
+# ============================================================================
+# OAC Configuration
+# ============================================================================
+
+variable "oac_name" {
+  description = "Custom name for CloudFront Origin Access Control (leave empty to autogenerate)"
+  type        = string
+  default     = ""
+}
+
+
+
+==================================================
+FILE: terraform/modules/cloudfront-s3-website/versions.tf
+==================================================
+
+# terraform/modules/cloudfront-s3-website/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/gitlab-ci-variables/main.tf
+==================================================
+
+# terraform/modules/gitlab-ci-variables/main.tf
+
+# ============================================================================
+# GitLab CI/CD Variables
+# ============================================================================
+
+locals {
+  platform_code = upper(var.platform_code)
+}
+
+resource "gitlab_project_variable" "admin_bucket" {
+  project           = var.gitlab_project_id
+  key               = "${local.platform_code}_PROD_BUCKET_NAME"
+  value             = "${var.admin_subdomain}.${var.domain}"
+  protected         = var.protected
+  masked            = var.masked
+  environment_scope = var.environment_scope
+  description       = "Admin bucket for ${var.domain} (${var.wl_type} WL)"
+}
+
+resource "gitlab_project_variable" "agent_bucket" {
+  count = contains(["agent", "mixed"], var.wl_type) ? 1 : 0
+
+  project           = var.gitlab_project_id
+  key               = "${local.platform_code}_AGENT_PROD_BUCKET_NAME"
+  value             = "${var.agent_subdomain}.${var.domain}"
+  protected         = var.protected
+  masked            = var.masked
+  environment_scope = var.environment_scope
+  description       = "Agent bucket for ${var.domain} (${var.wl_type} WL)"
+}
+
+
+==================================================
+FILE: terraform/modules/gitlab-ci-variables/outputs.tf
+==================================================
+
+# terraform/modules/gitlab-ci-variables/outputs.tf
+
+output "admin_variable" {
+  description = "Admin GitLab CI/CD variable details"
+  value = {
+    key   = gitlab_project_variable.admin_bucket.key
+    value = gitlab_project_variable.admin_bucket.value
+  }
+  sensitive = true
+}
+
+output "agent_variable" {
+  description = "Agent GitLab CI/CD variable details"
+  value = contains(["agent", "mixed"], var.wl_type) ? {
+    key   = gitlab_project_variable.agent_bucket[0].key
+    value = gitlab_project_variable.agent_bucket[0].value
+  } : null
+  sensitive = true
+}
+
+output "platform_code" {
+  description = "Platform code (uppercase)"
+  value       = upper(var.platform_code)
+}
+
+
+==================================================
+FILE: terraform/modules/gitlab-ci-variables/variables.tf
+==================================================
+
+# terraform/modules/gitlab-ci-variables/variables.tf
+
+variable "gitlab_project_id" {
+  description = "GitLab project ID (e.g., 'marketingtech/pmaffiliate/pmaffiliate-react-front')"
+  type        = string
+}
+
+variable "domain" {
+  description = "Domain name (e.g., 'liravegas.com')"
+  type        = string
+}
+
+variable "wl_type" {
+  description = "WL type: agent, click, or mixed"
+  type        = string
+  default     = "agent"
+
+  validation {
+    condition     = contains(["agent", "click", "mixed"], var.wl_type)
+    error_message = "Must be 'agent', 'click', or 'mixed'."
+  }
+}
+
+variable "platform_code" {
+  description = "Platform code (e.g., 'LIRV') - REQUIRED"
+  type        = string
+
+  validation {
+    condition     = length(var.platform_code) > 0
+    error_message = "platform_code cannot be empty."
+  }
+}
+
+variable "admin_subdomain" {
+  description = "Admin subdomain (e.g., 'admin', 'adminagent')"
+  type        = string
+}
+
+variable "agent_subdomain" {
+  description = "Agent subdomain (e.g., 'agent')"
+  type        = string
+  default     = "agent"
+}
+
+variable "protected" {
+  description = "Whether the variable is protected"
+  type        = bool
+  default     = false
+}
+
+variable "masked" {
+  description = "Whether the variable is masked"
+  type        = bool
+  default     = false
+}
+
+variable "environment_scope" {
+  description = "Environment scope (* for all environments)"
+  type        = string
+  default     = "*"
+}
+
+
+==================================================
+FILE: terraform/modules/gitlab-ci-variables/versions.tf
+==================================================
+
+# terraform/modules/gitlab-ci-variables/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    gitlab = {
+      source  = "gitlabhq/gitlab"
+      version = "~> 17.0"
+    }
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/mailgun/README.md
+==================================================
+
+# Mailgun Module
+
+Bu modul WL Automation sistemində Mailgun email dəstəyini tam avtomatlaşdırır.
+
+## ✨ Xüsusiyyətlər
+
+### ✅ Avtomatlaşdırılan Proseslər
+
+1. **Mailgun Domain Yaradılması**
+   - `use_automatic_sender_security = true` ilə avtomatik SPF/DKIM alignment
+   - EU region dəstəyi
+   - Spam filtering konfiqurasiyası
+
+2. **SMTP Credential Yaradılması**
+   - Random password generasiya olunur (16 simvol)
+   - Avtomatik `postmaster@support.domain.com` email yaradır
+   - Password Terraform state-də encrypted saxlanır
+
+3. **DNS Records (Cloudflare)**
+   - **MX Records**: Email qəbul etmək üçün
+   - **TXT/SPF Records**: Email göndərmək üçün
+   - **CNAME/DKIM Records**: Email authentication üçün
+   - Hamısı avtomatik Cloudflare-ə yazılır
+
+4. **Domain Verification** 🎉
+   - DNS records əlavə edildikdən sonra avtomatik verification başlayır
+   - 15 saniyə interval ilə polling (default)
+   - Maksimum 10 dəqiqə gözləyir (default)
+   - **Manual "Verify" düyməsinə klikləməyə ehtiyac yoxdur!**
+
+## 📋 İstifadə
+
+### Minimal Nümunə
+
+```hcl
+module "mailgun" {
+  source = "./modules/mailgun"
+  
+  domain             = "afftech.xyz"
+  mail_domain        = "support.afftech.xyz"
+  cloudflare_zone_id = "84787ea66aa226406e7c736892c6d493"
+}
+```
+
+### Tam Nümunə
+
+```hcl
+module "mailgun" {
+  source = "./modules/mailgun"
+  
+  domain             = "afftech.xyz"
+  mail_domain        = "support.afftech.xyz"
+  mailgun_region     = "eu"
+  cloudflare_zone_id = "84787ea66aa226406e7c736892c6d493"
+  smtp_login         = "postmaster"
+  
+  # Verification settings
+  wait_for_verification       = true
+  verification_poll_interval  = "15s"
+  verification_timeout        = "10m"
+  
+  tags = {
+    Project = "WL-Automation"
+    Purpose = "Email Support"
+  }
+}
+```
+
+## 🔑 Tələb Olunan Environment Variables
+
+```bash
+export TF_VAR_mailgun_api_key="your-mailgun-api-key-here"
+```
+
+Və ya `terraform.tfvars` (git-ə commit etməyin!):
+
+```hcl
+mailgun_api_key = "your-mailgun-api-key-here"
+```
+
+## 📤 Outputs
+
+```hcl
+output "mailgun_smtp_login" {
+  value = module.mailgun.smtp_login
+}
+
+output "mailgun_smtp_password" {
+  value     = module.mailgun.smtp_password
+  sensitive = true
+}
+
+output "mailgun_verification_status" {
+  value = module.mailgun.verification_status
+}
+```
+
+## 🎯 WL Konfiqurasiya
+
+WL config file-ında (`wl-configs/domain.auto.tfvars`):
+
+```hcl
+domain             = "afftech.xyz"
+wl_type            = "agent"
+platform_code      = "AFFTECH"
+cloudflare_zone_id = "84787ea66aa226406e7c736892c6d493"
+
+# ✅ Mailgun əlavə edin:
+mail_domain = "support.afftech.xyz"
+```
+
+## 🚀 Deployment
+
+```bash
+# 1. Mailgun API key set edin
+export TF_VAR_mailgun_api_key="your-api-key"
+
+# 2. Terraform init
+cd terraform/environments/prod
+terraform init -upgrade
+
+# 3. Plan yoxlayın
+terraform plan -var-file="wl-configs/afftech.auto.tfvars"
+
+# 4. Apply edin
+terraform apply -var-file="wl-configs/afftech.auto.tfvars"
+```
+
+## 📊 Yaradılan Resurslar
+
+| Resource | Nümunə | Məqsəd |
+|----------|--------|---------|
+| **Mailgun Domain** | `support.afftech.xyz` | Email domain |
+| **SMTP Credential** | `postmaster@support.afftech.xyz` | SMTP authentication |
+| **MX Records** | `mxa.eu.mailgun.org` (priority 10) | Email receiving |
+| **TXT Record** | `v=spf1 include:mailgun.org ~all` | SPF validation |
+| **CNAME Records** | `pdk1._domainkey...` | DKIM keys |
+| **Domain Verification** | Status: `active` | Avtomatik verification |
+
+## ⚙️ Variables
+
+| Variable | Növ | Default | Açıqlama |
+|----------|-----|---------|----------|
+| `domain` | string | - | **Required**. Main domain |
+| `mail_domain` | string | - | **Required**. Mail domain |
+| `mailgun_region` | string | `"eu"` | Mailgun region (us/eu) |
+| `cloudflare_zone_id` | string | - | **Required**. Cloudflare Zone ID |
+| `smtp_login` | string | `"postmaster"` | SMTP username |
+| `wait_for_verification` | bool | `true` | Verification gözləsin? |
+| `verification_poll_interval` | string | `"15s"` | Polling interval |
+| `verification_timeout` | string | `"10m"` | Maximum gözləmə vaxtı |
+
+## 🔍 Troubleshooting
+
+### Verification Uğursuz Olarsa
+
+1. **DNS propagation yoxlayın:**
+   ```bash
+   dig MX support.afftech.xyz
+   dig TXT support.afftech.xyz
+   dig CNAME pdk1._domainkey.support.afftech.xyz
+   ```
+
+2. **Mailgun UI-da yoxlayın:**
+   - https://app.eu.mailgun.com/mg/sending/domains
+   - Domain seçin
+   - "Domain verification & DNS" tab-a baxın
+
+3. **Timeout artırın:**
+   ```hcl
+   verification_timeout = "20m"  # 10m əvəzinə 20m
+   ```
+
+### Provider Error
+
+Əgər `mailgun_domain_verification` resource tapılmasa:
+
+```bash
+# Provider binary-ni yoxlayın
+ls -la ~/.terraform.d/plugins/registry.terraform.io/murad-heydarov/mailgun/0.1.0/darwin_arm64/
+
+# Yenidən init edin
+terraform init -upgrade
+```
+
+## 📝 Notes
+
+- **Automatic Sender Security** hər zaman enabled-dir (`use_automatic_sender_security = true`)
+- **SMTP password** Terraform state-də encrypted saxlanır
+- **DNS records** avtomatik Cloudflare-ə yazılır
+- **Verification** DNS propagation-dan sonra 5-10 dəqiqə içində tamamlanır
+- **EU region** default olaraq istifadə olunur
+
+## 🔗 Əlaqəli Modullar
+
+- `acm-certificates` - SSL certificate yaradır
+- `acm-dns-validation` - SSL validation edir
+- `wl-domain` - Mailgun-u çağırır
+
+## 📚 References
+
+- [Mailgun API Documentation](https://documentation.mailgun.com/en/latest/api_reference.html)
+- [Mailgun Domain Verification](https://help.mailgun.com/hc/en-us/articles/32884702360603-Domain-Verification-Setup-Guide)
+- [Custom Provider GitHub](https://github.com/murad-heydarov/terraform-provider-mailgun)
+
+
+
+
+==================================================
+FILE: terraform/modules/mailgun/main.tf
+==================================================
+
+# terraform/modules/mailgun/main.tf
+
+# ============================================================================
+# Random SMTP Password Generation
+# ============================================================================
+resource "random_password" "smtp" {
+  length  = 16
+  special = false
+}
+
+# ============================================================================
+# Mailgun Domain Creation
+# ============================================================================
+resource "mailgun_domain" "wl" {
+  name                          = var.mail_domain
+  region                        = var.mailgun_region
+  spam_action                   = var.spam_action
+  wildcard                      = var.wildcard
+  use_automatic_sender_security = true
+
+  open_tracking  = var.open_tracking
+  click_tracking = var.click_tracking
+  web_scheme     = var.web_scheme
+}
+
+# ============================================================================
+# SMTP Credential Creation
+# ============================================================================
+resource "mailgun_domain_credential" "smtp_user" {
+  domain   = mailgun_domain.wl.name
+  login    = var.smtp_login
+  password = random_password.smtp.result
+  region   = var.mailgun_region
+
+  lifecycle {
+    ignore_changes = [password]
+  }
+
+  depends_on = [mailgun_domain.wl]
+}
+
+# ============================================================================
+# DNS Records - Cloudflare Integration
+# ============================================================================
+
+# MX Records (Receiving) - use record.id as key (unique: mxa, mxb)
+resource "cloudflare_dns_record" "mailgun_mx" {
+  for_each = {
+    for record in mailgun_domain.wl.receiving_records_set :
+    record.id => record
+    if record.record_type == "MX"
+  }
+
+  zone_id  = var.cloudflare_zone_id
+  name     = var.mail_domain
+  type     = "MX"
+  content  = each.value.value
+  priority = tonumber(each.value.priority)
+  ttl      = 1
+  proxied  = false
+  comment  = "Mailgun MX - ${var.domain}"
+}
+
+# TXT/SPF Records (Sending) - use record.name as key (unique)
+resource "cloudflare_dns_record" "mailgun_txt" {
+  for_each = {
+    for record in mailgun_domain.wl.sending_records_set :
+    record.name => record
+    if record.record_type == "TXT"
+  }
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.name
+  type    = "TXT"
+  content = "\"${each.value.value}\"" 
+  ttl     = 1
+  proxied = false
+  comment = "Mailgun SPF - ${var.domain}"
+}
+
+
+# DKIM/CNAME Records (Sending) - use record.name as key (unique!)
+resource "cloudflare_dns_record" "mailgun_cname" {
+  for_each = {
+    for record in mailgun_domain.wl.sending_records_set :
+    record.name => record
+    if record.record_type == "CNAME"
+  }
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.name
+  type    = "CNAME"
+  content = each.value.value
+  ttl     = 1
+  proxied = false
+  comment = "Mailgun DKIM - ${var.domain}"
+}
+
+# ============================================================================
+# Automatic Domain Verification
+# ============================================================================
+resource "mailgun_domain_verification" "wl" {
+  domain          = mailgun_domain.wl.name
+  region          = var.mailgun_region
+  wait_for_active = var.wait_for_verification
+  poll_interval   = var.verification_poll_interval
+  timeout         = var.verification_timeout
+
+  depends_on = [
+    mailgun_domain.wl,
+    cloudflare_dns_record.mailgun_mx,
+    cloudflare_dns_record.mailgun_txt,
+    cloudflare_dns_record.mailgun_cname
+  ]
+}
+
+
+==================================================
+FILE: terraform/modules/mailgun/outputs.tf
+==================================================
+
+# terraform/modules/mailgun/outputs.tf
+
+# ============================================================================
+# Domain Outputs
+# ============================================================================
+
+output "domain_name" {
+  description = "Mailgun domain name"
+  value       = mailgun_domain.wl.name
+}
+
+output "domain_region" {
+  description = "Mailgun domain region"
+  value       = mailgun_domain.wl.region
+}
+
+# ============================================================================
+# SMTP Outputs
+# ============================================================================
+
+output "smtp_login" {
+  description = "Full SMTP login email (e.g., postmaster@support.domain.com)"
+  value       = mailgun_domain.wl.smtp_login
+}
+
+output "smtp_password" {
+  description = "SMTP password (sensitive)"
+  value       = random_password.smtp.result
+  sensitive   = true
+}
+
+output "smtp_credential_email" {
+  description = "SMTP credential email address"
+  value       = "${var.smtp_login}@${var.mail_domain}"
+}
+
+# ============================================================================
+# Verification Outputs
+# ============================================================================
+
+output "verification_status" {
+  description = "Domain verification status (e.g., active, unverified)"
+  value       = mailgun_domain_verification.wl.status
+}
+
+output "use_automatic_sender_security" {
+  description = "Whether automatic sender security is enabled"
+  value       = mailgun_domain.wl.use_automatic_sender_security
+}
+
+# ============================================================================
+# DNS Records Outputs
+# ============================================================================
+
+output "sending_records" {
+  description = "Mailgun sending DNS records (SPF, DKIM)"
+  value       = mailgun_domain.wl.sending_records_set
+}
+
+output "receiving_records" {
+  description = "Mailgun receiving DNS records (MX)"
+  value       = mailgun_domain.wl.receiving_records_set
+}
+
+# ============================================================================
+# Summary Output
+# ============================================================================
+
+output "mailgun_summary" {
+  description = "Complete Mailgun configuration summary"
+  value = {
+    domain                        = mailgun_domain.wl.name
+    region                        = mailgun_domain.wl.region
+    smtp_login                    = mailgun_domain.wl.smtp_login
+    verification_status           = mailgun_domain_verification.wl.status
+    use_automatic_sender_security = mailgun_domain.wl.use_automatic_sender_security
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/mailgun/variables.tf
+==================================================
+
+# terraform/modules/mailgun/variables.tf
+
+variable "domain" {
+  description = "Main domain (e.g., afftech.xyz)"
+  type        = string
+}
+
+variable "mail_domain" {
+  description = "Mail domain (e.g., support.afftech.xyz)"
+  type        = string
+}
+
+variable "mailgun_region" {
+  description = "Mailgun region (us or eu)"
+  type        = string
+  default     = "eu"
+
+  validation {
+    condition     = contains(["us", "eu"], var.mailgun_region)
+    error_message = "Mailgun region must be 'us' or 'eu'."
+  }
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID for DNS records"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-f0-9]{32}$", var.cloudflare_zone_id))
+    error_message = "Cloudflare Zone ID must be 32 hexadecimal characters."
+  }
+}
+
+variable "smtp_login" {
+  description = "SMTP login username (will be @mail_domain)"
+  type        = string
+  default     = "postmaster"
+}
+
+variable "wait_for_verification" {
+  description = "Wait for domain verification to complete"
+  type        = bool
+  default     = true
+}
+
+variable "verification_poll_interval" {
+  description = "How often to check verification status"
+  type        = string
+  default     = "45s"
+}
+
+variable "verification_timeout" {
+  description = "Maximum time to wait for verification"
+  type        = string
+  default     = "20m"
+}
+
+variable "tags" {
+  description = "Resource tags"
+  type        = map(string)
+  default     = {}
+}
+
+variable "spam_action" { default = "disabled" }
+variable "wildcard" { default = false }
+variable "open_tracking" { default = false }
+variable "click_tracking" { default = false }
+variable "web_scheme" { default = "https" }
+
+
+==================================================
+FILE: terraform/modules/mailgun/versions.tf
+==================================================
+
+# terraform/modules/mailgun/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    mailgun = {
+      source  = "murad-heydarov/mailgun"
+      version = "0.1.6"
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
+  }
+}
+
+
+==================================================
+FILE: terraform/modules/wl-domain/main.tf
+==================================================
+
+# terraform/modules/wl-domain/main.tf
+
+# ============================================================================
+# Cloudflare Zone Lookup
+# ============================================================================
+data "cloudflare_zone" "zone" {
+  filter = {
+    name = var.domain
+  }
+}
+
+locals {
+  zone_id = "84787ea66aa226406e7c736892c6d493" # afftech.xyz
+  sans    = var.sans != null && length(var.sans) > 0 ? var.sans : ["*.${var.domain}"]
+}
+
+# ============================================================================
+# ACM Certificates (eu-central-1 + us-east-1)
+# ============================================================================
+module "acm" {
+  source = "../acm-certificates"
+
+  domain_name               = var.domain
+  subject_alternative_names = local.sans
+
+  create_regional_cert   = var.create_regional_cert
+  create_cloudfront_cert = var.create_cloudfront_cert
+
+  tags = var.tags
+
+  providers = {
+    aws      = aws
+    aws.east = aws.east
+  }
+}
+
+# ============================================================================
+# DNS Validation
+# ============================================================================
+module "validation" {
+  source = "../acm-dns-validation"
+
+  domain_name        = var.domain
+  cloudflare_zone_id = local.zone_id
+
+  regional_certificate   = module.acm.regional_certificate
+  cloudfront_certificate = module.acm.cloudfront_certificate
+
+  validation_timeout = var.validation_timeout
+
+  providers = {
+    aws        = aws
+    aws.east   = aws.east
+    cloudflare = cloudflare
+  }
+
+  depends_on = [module.acm]
+}
+
+# ============================================================================
+# Admin CloudFront + S3
+# ============================================================================
+module "admin" {
+  count  = var.create_admin ? 1 : 0
+  source = "../cloudfront-s3-website"
+
+  domain_name     = var.domain
+  subdomain       = var.admin_subdomain
+  certificate_arn = module.validation.cloudfront_certificate_arn
+
+  s3_index_document      = var.s3_index_document
+  s3_error_document      = var.s3_error_document
+  enable_versioning      = var.enable_versioning
+  enable_compression     = var.enable_compression
+  viewer_protocol_policy = var.viewer_protocol_policy
+  price_class            = var.price_class
+  min_ttl                = var.min_ttl
+  default_ttl            = var.default_ttl
+  max_ttl                = var.max_ttl
+  custom_error_responses = var.custom_error_responses
+
+  tags = merge(var.tags, {
+    Subdomain = var.admin_subdomain
+    Purpose   = "Admin Panel"
+  })
+
+  depends_on = [module.validation]
+}
+
+# ============================================================================
+# Agent CloudFront + S3
+# ============================================================================
+module "agent" {
+  count  = var.create_agent ? 1 : 0
+  source = "../cloudfront-s3-website"
+
+  domain_name     = var.domain
+  subdomain       = var.agent_subdomain
+  certificate_arn = module.validation.cloudfront_certificate_arn
+
+  s3_index_document      = var.s3_index_document
+  s3_error_document      = var.s3_error_document
+  enable_versioning      = var.enable_versioning
+  enable_compression     = var.enable_compression
+  viewer_protocol_policy = var.viewer_protocol_policy
+  price_class            = var.price_class
+  min_ttl                = var.min_ttl
+  default_ttl            = var.default_ttl
+  max_ttl                = var.max_ttl
+  custom_error_responses = var.custom_error_responses
+
+  tags = merge(var.tags, {
+    Subdomain = var.agent_subdomain
+    Purpose   = "Agent Panel"
+  })
+
+  depends_on = [module.validation]
+}
+
+# ============================================================================
+# Click Root Domain CloudFront + S3
+# Uses "@" to indicate root domain (no subdomain)
+# ============================================================================
+module "click" {
+  count  = var.create_click ? 1 : 0
+  source = "../cloudfront-s3-website"
+
+  domain_name     = var.domain
+  subdomain       = "@" # Root domain indicator
+  certificate_arn = module.validation.cloudfront_certificate_arn
+
+  s3_index_document      = var.s3_index_document
+  s3_error_document      = var.s3_error_document
+  enable_versioning      = var.enable_versioning
+  enable_compression     = var.enable_compression
+  viewer_protocol_policy = var.viewer_protocol_policy
+  price_class            = var.price_class
+  min_ttl                = var.min_ttl
+  default_ttl            = var.default_ttl
+  max_ttl                = var.max_ttl
+  custom_error_responses = var.custom_error_responses
+
+  tags = merge(var.tags, {
+    Subdomain = "@"
+    Purpose   = "Click Domain (Root)"
+  })
+
+  depends_on = [module.validation]
+}
+
+# ============================================================================
+# CDN CloudFront + S3
+# ============================================================================
+module "cdn" {
+  count  = var.create_cdn ? 1 : 0
+  source = "../cloudfront-s3-website"
+
+  domain_name     = var.domain
+  subdomain       = var.cdn_subdomain
+  certificate_arn = module.validation.cloudfront_certificate_arn
+
+  # CDN-specific configuration
+  s3_index_document      = "index.html"
+  s3_error_document      = "404.html"
+  enable_versioning      = false
+  enable_compression     = true
+  viewer_protocol_policy = "redirect-to-https"
+  price_class            = var.price_class
+
+  # CDN cache settings - Long TTL for static assets
+  min_ttl     = 0
+  default_ttl = var.cdn_default_ttl
+  max_ttl     = var.cdn_max_ttl
+
+  custom_error_responses = [
+    {
+      error_code         = 403
+      response_code      = 404
+      response_page_path = "/404.html"
+    },
+    {
+      error_code         = 404
+      response_code      = 404
+      response_page_path = "/404.html"
+    }
+  ]
+
+  tags = merge(var.tags, {
+    Subdomain = var.cdn_subdomain
+    Purpose   = "CDN Static Assets"
+  })
+
+  depends_on = [module.validation]
+}
+
+# ============================================================================
+# Reports CloudFront + S3
+# ============================================================================
+module "reports" {
+  count  = var.create_reports ? 1 : 0
+  source = "../cloudfront-s3-website"
+
+  domain_name     = var.domain
+  subdomain       = var.reports_subdomain
+  certificate_arn = module.validation.cloudfront_certificate_arn
+
+  # Reports-specific configuration
+  s3_index_document      = "index.html"
+  s3_error_document      = "error.html"
+  enable_versioning      = var.reports_enable_versioning
+  enable_compression     = true
+  viewer_protocol_policy = "redirect-to-https"
+  price_class            = var.reports_price_class
+
+  # Reports cache settings - Medium TTL
+  min_ttl     = 0
+  default_ttl = 3600  # 1 hour
+  max_ttl     = 86400 # 24 hours
+
+  custom_error_responses = [
+    {
+      error_code         = 403
+      response_code      = 200
+      response_page_path = "/index.html"
+    },
+    {
+      error_code         = 404
+      response_code      = 200
+      response_page_path = "/index.html"
+    }
+  ]
+
+  tags = merge(var.tags, {
+    Subdomain = var.reports_subdomain
+    Purpose   = "Reports Portal"
+  })
+
+  depends_on = [module.validation]
+}
+
+# ============================================================================
+# DNS Records
+# ============================================================================
+
+# Admin CNAME
+resource "cloudflare_dns_record" "admin" {
+  count   = var.create_admin ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = module.admin[0].fqdn
+  type    = "CNAME"
+  content = module.admin[0].cloudfront_domain_name
+  ttl     = 1
+  proxied = false
+
+  comment = "Admin → CloudFront"
+}
+
+# Agent CNAME
+resource "cloudflare_dns_record" "agent" {
+  count   = var.create_agent ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = module.agent[0].fqdn
+  type    = "CNAME"
+  content = module.agent[0].cloudfront_domain_name
+  ttl     = 1
+  proxied = false
+
+  comment = "Agent → CloudFront"
+}
+
+# Click CNAME (Root Domain)
+resource "cloudflare_dns_record" "click" {
+  count   = var.create_click ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = module.click[0].fqdn
+  type    = "CNAME"
+  content = module.click[0].cloudfront_domain_name
+  ttl     = 1
+  proxied = false
+
+  comment = "Click (Root) → CloudFront"
+}
+
+# CDN CNAME
+resource "cloudflare_dns_record" "cdn" {
+  count   = var.create_cdn ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = module.cdn[0].fqdn
+  type    = "CNAME"
+  content = module.cdn[0].cloudfront_domain_name
+  ttl     = 1
+  proxied = false
+
+  comment = "CDN → CloudFront"
+}
+
+# Reports CNAME
+resource "cloudflare_dns_record" "reports" {
+  count   = var.create_reports ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = module.reports[0].fqdn
+  type    = "CNAME"
+  content = module.reports[0].cloudfront_domain_name
+  ttl     = 1
+  proxied = false
+
+  comment = "Reports → CloudFront"
+}
+
+# ============================================================================
+# DNS Records - ALB
+# ============================================================================
+
+# API CNAME Record (api.{domain} → ALB)
+# Created for: Agent, Click, Mixed WL (main domain only)
+resource "cloudflare_dns_record" "api" {
+  count   = var.create_api_record ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = "api.${var.domain}"
+  type    = "CNAME"
+  content = var.alb_dns_name
+  ttl     = 1
+  proxied = true
+
+  comment = "API → ALB (${var.wl_type} WL)"
+}
+
+# Root Domain CNAME Record ({domain} → ALB)
+# Created for: Click domain (separate tracking domain)
+# Example: trackingslapkong.com → ALB
+resource "cloudflare_dns_record" "root_alb" {
+  count   = var.create_root_record ? 1 : 0
+  zone_id = local.zone_id
+
+  name    = var.domain
+  type    = "CNAME"
+  content = var.alb_dns_name
+  ttl     = 1
+  proxied = true
+
+  comment = "Click Domain (Root) → ALB"
+}
+
+# ============================================================================
+# GitLab CI/CD Variables (Optional)
+# ============================================================================
+
+module "gitlab_variables" {
+  count  = var.gitlab_project_id != null ? 1 : 0
+  source = "../gitlab-ci-variables"
+
+  gitlab_project_id = var.gitlab_project_id
+  domain            = var.domain
+  wl_type           = var.wl_type
+  platform_code     = var.platform_code
+  admin_subdomain   = var.admin_subdomain
+  agent_subdomain   = var.agent_subdomain
+
+  protected         = var.gitlab_variables_protected
+  masked            = var.gitlab_variables_masked
+  environment_scope = var.gitlab_environment_scope
+
+  depends_on = [
+    module.admin,
+    module.agent
+  ]
+}
+
+# ============================================================================
+# Mailgun Integration (Optional)
+# ============================================================================
+
+module "mailgun" {
+  count  = var.mail_domain != null ? 1 : 0
+  source = "../mailgun"
+
+  domain             = var.domain
+  mail_domain        = var.mail_domain
+  mailgun_region     = "eu" # Default to EU region
+  cloudflare_zone_id = local.zone_id
+
+  tags = merge(var.tags, {
+    Purpose = "Email Support"
+    WL_Type = var.wl_type
+  })
+
+  depends_on = [module.validation]
+}
+
+
+==================================================
+FILE: terraform/modules/wl-domain/outputs.tf
+==================================================
+
+# terraform/modules/wl-domain/outputs.tf
+
+output "zone_id" {
+  description = "Cloudflare Zone ID"
+  value       = local.zone_id
+}
+
+output "regional_certificate_arn" {
+  description = "Regional certificate ARN"
+  value       = module.validation.regional_certificate_arn
+}
+
+output "cloudfront_certificate_arn" {
+  description = "CloudFront certificate ARN"
+  value       = module.validation.cloudfront_certificate_arn
+}
+
+output "admin" {
+  description = "Admin distribution details"
+  value = var.create_admin ? {
+    fqdn              = module.admin[0].fqdn
+    s3_bucket         = module.admin[0].s3_bucket_name
+    cloudfront_domain = module.admin[0].cloudfront_domain_name
+    cloudfront_id     = module.admin[0].cloudfront_distribution_id
+  } : null
+}
+
+output "agent" {
+  description = "Agent distribution details"
+  value = var.create_agent ? {
+    fqdn              = module.agent[0].fqdn
+    s3_bucket         = module.agent[0].s3_bucket_name
+    cloudfront_domain = module.agent[0].cloudfront_domain_name
+    cloudfront_id     = module.agent[0].cloudfront_distribution_id
+  } : null
+}
+
+output "click" {
+  description = "Click distribution details"
+  value = var.create_click ? {
+    fqdn              = module.click[0].fqdn
+    s3_bucket         = module.click[0].s3_bucket_name
+    cloudfront_domain = module.click[0].cloudfront_domain_name
+    cloudfront_id     = module.click[0].cloudfront_distribution_id
+  } : null
+}
+
+output "cdn" {
+  description = "CDN distribution details"
+  value = var.create_cdn ? {
+    fqdn              = module.cdn[0].fqdn
+    s3_bucket         = module.cdn[0].s3_bucket_name
+    cloudfront_domain = module.cdn[0].cloudfront_domain_name
+    cloudfront_id     = module.cdn[0].cloudfront_distribution_id
+  } : null
+}
+
+output "reports" {
+  description = "Reports distribution details"
+  value = var.create_reports ? {
+    fqdn              = module.reports[0].fqdn
+    s3_bucket         = module.reports[0].s3_bucket_name
+    cloudfront_domain = module.reports[0].cloudfront_domain_name
+    cloudfront_id     = module.reports[0].cloudfront_distribution_id
+  } : null
+}
+
+# ============================================================================
+# ALB DNS Outputs
+# ============================================================================
+
+output "api_dns_record" {
+  description = "API DNS record details"
+  value = var.create_api_record ? {
+    fqdn    = "api.${var.domain}"
+    target  = var.alb_dns_name
+    proxied = true
+  } : null
+}
+
+output "root_alb_dns_record" {
+  description = "Root domain ALB DNS record (for click domains)"
+  value = var.create_root_record ? {
+    fqdn    = var.domain
+    target  = var.alb_dns_name
+    proxied = true
+  } : null
+}
+
+
+==================================================
+FILE: terraform/modules/wl-domain/variables.tf
+==================================================
+
+# terraform/modules/wl-domain/variables.tf
+
+variable "domain" {
+  description = "Domain name"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]\\.[a-z]{2,}$", var.domain))
+    error_message = "Domain must be valid format."
+  }
+}
+
+variable "sans" {
+  description = "Subject Alternative Names"
+  type        = list(string)
+  default     = []
+}
+
+variable "create_regional_cert" {
+  description = "Create regional certificate"
+  type        = bool
+  default     = true
+}
+
+variable "create_cloudfront_cert" {
+  description = "Create CloudFront certificate"
+  type        = bool
+  default     = true
+}
+
+variable "create_admin" {
+  description = "Create admin CloudFront"
+  type        = bool
+  default     = true
+}
+
+variable "create_agent" {
+  description = "Create agent CloudFront"
+  type        = bool
+  default     = false
+}
+
+variable "create_click" {
+  description = "Create click subdomain CloudFront"
+  type        = bool
+  default     = false
+}
+
+# ============================================================================
+# Subdomain Configuration (from Confluence)
+# ============================================================================
+
+variable "admin_subdomain" {
+  description = "Admin subdomain (from Confluence Admin Domain field, e.g., 'admin', 'adminagent')"
+  type        = string
+  default     = "admin"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.admin_subdomain))
+    error_message = "Admin subdomain must contain only lowercase letters, numbers, and hyphens."
+  }
+}
+
+variable "agent_subdomain" {
+  description = "Agent subdomain (from Confluence Agent Domain field, e.g., 'agent')"
+  type        = string
+  default     = "agent"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.agent_subdomain))
+    error_message = "Agent subdomain must contain only lowercase letters, numbers, and hyphens."
+  }
+}
+
+variable "validation_timeout" {
+  description = "ACM validation timeout"
+  type        = string
+  default     = "45m"
+}
+
+variable "s3_index_document" {
+  type    = string
+  default = "index.html"
+}
+
+variable "s3_error_document" {
+  type    = string
+  default = "index.html"
+}
+
+variable "enable_versioning" {
+  type    = bool
+  default = false
+}
+
+variable "enable_compression" {
+  type    = bool
+  default = true
+}
+
+variable "viewer_protocol_policy" {
+  type    = string
+  default = "redirect-to-https"
+}
+
+variable "price_class" {
+  type    = string
+  default = "PriceClass_All"
+}
+
+variable "min_ttl" {
+  type    = number
+  default = 0
+}
+
+variable "default_ttl" {
+  type    = number
+  default = 3600
+}
+
+variable "max_ttl" {
+  type    = number
+  default = 86400
+}
+
+variable "custom_error_responses" {
+  type = list(object({
+    error_code         = number
+    response_code      = number
+    response_page_path = string
+  }))
+  default = [
+    {
+      error_code         = 403
+      response_code      = 200
+      response_page_path = "/index.html"
+    }
+  ]
+}
+
+variable "tags" {
+  description = "Resource tags"
+  type        = map(string)
+  default     = {}
+}
+
+variable "cloudflare_account_id" {
+  description = "Cloudflare Account ID (if you have multiple accounts)"
+  type        = string
+  default     = null
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID"
+  type        = string
+  default     = null
+}
+
+# ============================================================================
+# CDN and Reports Configuration
+# ============================================================================
+
+variable "create_cdn" {
+  description = "Create CDN CloudFront distribution"
+  type        = bool
+  default     = true
+}
+
+variable "create_reports" {
+  description = "Create Reports CloudFront distribution"
+  type        = bool
+  default     = true
+}
+
+variable "cdn_subdomain" {
+  description = "CDN subdomain name"
+  type        = string
+  default     = "cdn"
+}
+
+variable "reports_subdomain" {
+  description = "Reports subdomain name"
+  type        = string
+  default     = "reports"
+}
+
+# CDN-specific cache settings
+variable "cdn_default_ttl" {
+  description = "Default TTL for CDN cache (in seconds)"
+  type        = number
+  default     = 86400 # 24 hours
+}
+
+variable "cdn_max_ttl" {
+  description = "Maximum TTL for CDN cache (in seconds)"
+  type        = number
+  default     = 31536000 # 1 year
+}
+
+# Reports-specific settings
+variable "reports_enable_versioning" {
+  description = "Enable versioning for Reports S3 bucket"
+  type        = bool
+  default     = true
+}
+
+variable "reports_price_class" {
+  description = "CloudFront price class for Reports"
+  type        = string
+  default     = "PriceClass_100" # Cheaper, reports have less traffic
+}
+
+# ============================================================================
+# WL Configuration
+# ============================================================================
+
+variable "wl_type" {
+  description = "WL type: agent, click, or mixed"
+  type        = string
+  default     = "agent"
+
+  validation {
+    condition     = contains(["agent", "click", "mixed"], var.wl_type)
+    error_message = "Must be 'agent', 'click', or 'mixed'."
+  }
+}
+
+variable "platform_code" {
+  description = "Platform code (e.g., 'LIRV', 'SLPKNG') - REQUIRED"
+  type        = string
+
+  validation {
+    condition     = var.platform_code != null && length(var.platform_code) > 0
+    error_message = "platform_code is required. Example: 'LIRV', 'SLPKNG', 'AFFTECH'"
+  }
+}
+
+# ============================================================================
+# GitLab CI/CD Configuration
+# ============================================================================
+
+variable "gitlab_project_id" {
+  description = "GitLab project ID (null to skip GitLab integration)"
+  type        = string
+  default     = null
+}
+
+variable "gitlab_variables_protected" {
+  description = "Whether GitLab variables are protected"
+  type        = bool
+  default     = false
+}
+
+variable "gitlab_variables_masked" {
+  description = "Whether GitLab variables are masked"
+  type        = bool
+  default     = false
+}
+
+variable "gitlab_environment_scope" {
+  description = "GitLab environment scope"
+  type        = string
+  default     = "*"
+}
+
+# ============================================================================
+# ALB Configuration
+# ============================================================================
+
+variable "alb_dns_name" {
+  description = "ALB DNS name for API ingress"
+  type        = string
+  default     = "mt-apps-ingress-978b1006d8a9d559.elb.eu-central-1.amazonaws.com"
+}
+
+variable "create_api_record" {
+  description = "Create api.{domain} DNS record"
+  type        = bool
+  default     = true
+}
+
+variable "create_root_record" {
+  description = "Create {domain} (root) DNS record pointing to ALB"
+  type        = bool
+  default     = false
+}
+
+# ============================================================================
+# Mailgun Configuration
+# ============================================================================
+
+variable "mail_domain" {
+  description = "Mail support domain (e.g., 'support.afftech.xyz'). If null, Mailgun will not be configured."
+  type        = string
+  default     = null
+}
+
+
+==================================================
+FILE: terraform/modules/wl-domain/versions.tf
+==================================================
+
+# terraform/modules/wl-domain/versions.tf
+
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      version               = "~> 6.0"
+      configuration_aliases = [aws.east]
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
+  }
+}
+
+

@@ -46,13 +46,13 @@ variable "wait_for_verification" {
 variable "verification_poll_interval" {
   description = "How often to check verification status"
   type        = string
-  default     = "15s"
+  default     = "45s"
 }
 
 variable "verification_timeout" {
   description = "Maximum time to wait for verification"
   type        = string
-  default     = "10m"
+  default     = "20m"
 }
 
 variable "tags" {

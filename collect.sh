@@ -1,21 +1,65 @@
 #!/bin/bash
-cd "$(dirname "$0")"  # script directory
+set -e
 
-output_file="collected_$(date +%Y%m%d_%H%M).txt"
-> "$output_file"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT="all_project_files_${TIMESTAMP}.txt"
 
-# Əvvəlcə bütün faylları 'git status' ilə yoxlayır
-echo "Collecting latest saved files (including unstaged changes)..."
+print_file () {
+  local file="$1"
 
-find terraform -type f \( -name "*.tf" -o -name "*.tfvars" -o -name ".env" \) -print0 | while IFS= read -r -d '' file; do
-  echo "----------------------------" >> "$output_file"
-  echo "# $file" >> "$output_file"
-  echo "" >> "$output_file"
-  echo "\`\`\`" >> "$output_file"
-  cat "$file" >> "$output_file"
-  echo "\`\`\`" >> "$output_file"
-  echo "----------------------------" >> "$output_file"
-  echo "" >> "$output_file"
-done
+  echo "==================================================" >> "$OUTPUT"
+  echo "FILE: $file" >> "$OUTPUT"
+  echo "==================================================" >> "$OUTPUT"
+  echo "" >> "$OUTPUT"
+  cat "$file" >> "$OUTPUT"
+  echo -e "\n\n" >> "$OUTPUT"
+}
 
-echo "✅ All Terraform files collected in: $output_file"
+# --------------------------------------------------
+# 1. ROOT
+# --------------------------------------------------
+[ -f README.md ] && print_file README.md
+
+# --------------------------------------------------
+# 2. DOCS (əgər varsa)
+# --------------------------------------------------
+if [ -d docs ]; then
+  find docs -type f -name "*.md" | sort | while read -r f; do
+    print_file "$f"
+  done
+fi
+
+# --------------------------------------------------
+# 3. TERRAFORM ENVIRONMENT (prod)
+# --------------------------------------------------
+find terraform/environments/prod \
+  -type d \( -name .terraform -o -name logs \) -prune -o \
+  -type f \( \
+    -name "*.tf" -o \
+    -name "*.sh" -o \
+    -name "*.auto.tfvars" \
+  \) \
+  ! -name "terraform.tfstate*" \
+  -print | sort | while read -r f; do
+    print_file "$f"
+  done
+
+# --------------------------------------------------
+# 4. WL CONFIG TEMPLATES (MÜTLƏQ)
+# --------------------------------------------------
+find terraform/environments/prod/wl-configs/templates \
+  -type f | sort | while read -r f; do
+    print_file "$f"
+  done
+
+# --------------------------------------------------
+# 5. TERRAFORM MODULES (HAMISI)
+# --------------------------------------------------
+find terraform/modules \
+  -type d -name .terraform -prune -o \
+  -type f \( -name "*.tf" -o -name "*.md" \) \
+  -print | sort | while read -r f; do
+    print_file "$f"
+  done
+
+echo "✅ DONE. Output file: $OUTPUT"
